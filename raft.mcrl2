@@ -1,0 +1,30 @@
+% I need to check how many states are we going to have follower, leader and waiting 
+sort State = struct follower | leader | candidate; 
+
+% Pos is the index of each note
+map  N: Pos;
+eqn  N = 3;
+
+map push:  Pos # List(Pos) -> List(Pos);
+
+var  l: List(Pos);
+     x: Pos;
+
+eqn  push(x,l) = x |> l;  
+
+act
+  	send, wlog, receive:Pos # Pos;  
+% I can add the sychornization latter when it is moved.v 
+
+%I need to check that it is not empty and it is not the head
+proc
+  Client(l: List(Pos)) = (#l >= 1) -> sum p:Pos . send(p, rhead(l)) .  Client(rtail(l));
+  Node(id: Pos, state: State, l: List(Pos)) = (state == leader) -> (sum v:Pos . receive(id, v). Node(id, state, push(1, l)));
+
+init
+  allow(
+    { wlog},
+    comm(
+      {send|receive -> wlog}, 
+      Client([1,2]) || Node(1, leader, []) || Node(2, follower, [])
+  ) ) ;
