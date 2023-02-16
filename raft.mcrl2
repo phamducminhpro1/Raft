@@ -2,6 +2,10 @@ sort State = struct follower | leader | candidate;
 %TODO, decie if mType is approporiate here or not 
 sort mType = struct RequestVoteRequest;
 
+% Number of nodes 
+map  N: Pos;
+eqn  N = 2;
+
 map push:  Pos # List(Pos) -> List(Pos);
 
 var  l: List(Pos);
@@ -10,6 +14,9 @@ var  l: List(Pos);
 eqn  push(x,l) = x |> l;  
 
 %Variable that maps the the id of Node to boolean. Each not has this variable. If the mapping from is true this means that node i votes for the node that contains voterLog
+sort voterLog = List(Pos);    
+	
+
 
 act
   	send, wlog, receive:Pos # Pos;
@@ -22,28 +29,31 @@ proc
   % Client uses list to send messages to a leader node. 
   Client(l: List(Pos)) = (#l >= 1) -> sum p:Pos . send(p, rhead(l)) .  Client(rtail(l));
 
-  Node(id: Pos, state: State, l: List(Pos)) = 
+  Node(id: Pos, state: State, l: List(Pos), voterLog: voterLog) = 
 % If is it is a leader, then the client can send message to that node. 
-((state == leader) -> (sum v:Pos . receive(id, v). Node(id, state, push(1, l))))
+((state == leader) -> (sum v:Pos . receive(id, v). Node(id, state, push(1, l), voterLog)))
 
 % The node can stop anytime, if it stops then, it can startup as the follower with log and term unchanged
 %+ stop . Node(id, follower, l, term)
 
 % The node can time out, if it time out, then it changes to the candidate state and term + 1
-	+ timeout . Node(id, candidate, l)
+	+ timeout . Node(id, candidate, l, voterLog)
 %TODO,: I forget about the term for now 
 
 % If it is a candiate then it sends the request vote request. 
 % For now, I assume that the vote request is always true, and the term and log is 1  TODO 
+% It is a bit wheird that I sent many times here TODO 
 	+ (state == candidate) -> 
-		((sum d: Pos . requestVote(RequestVoteRequest, 1, 1, id, d))
+		((sum d: Pos . (!(d in voterLog)) -> requestVote(RequestVoteRequest, 1, 1, id, d). Node(id, candidate, l, voterLog <| d))
 		+ 	
-		(sum d: Pos . handleRequestVoteReply(1, true, id, d))). Node(id, leader, l)
+		(sum d: Pos . (!(d in voterLog)) -> handleRequestVoteReply(1, true, id, d). Node(id, candidate, l, voterLog <| d)))
+		+ 
+		(#voterLog*2 > N) -> Node(id, leader, l, voterLog)
 % TODO, I need to count the vote in here, but I do not yet know how to do think. 
 %TODO I need to add what if they have  
 % To break down now, the easies part it always accept and and check fo tthe mority  
 %send reply term, true, where it comes from 
-	+ sum d: Pos . handleRequestVoteRequest(RequestVoteRequest, 1,1,id,d) . sendReply(1, true,id ,d) . Node(id, leader, l) ; 
+	+ sum d: Pos . handleRequestVoteRequest(RequestVoteRequest, 1,1,id,d) . sendReply(1, true,id ,d) . Node(id, leader, l, voterLog);     
   
 
 init
@@ -54,5 +64,6 @@ init
 		requestVote|handleRequestVoteRequest -> requestVoteSent,
 		sendReply|handleRequestVoteReply -> replyVoteSent}, 
 	% I chose term to start with 1, but it can also start with 0 
-      Client([1,2]) || Node(1, leader, []) || Node(2, follower, [])
+	% Remeber to change N - N is the number of node
+      Client([1,2]) || Node(1, leader, [], []) || Node(2, follower, [], [])
   ) ) ;
