@@ -22,7 +22,7 @@ sort voterLog = List(Pos);
 
 act
   	send, wlog, receive:Pos # Pos;
-	stop, timeout, becomeLeader, addVoteToItSelf;  
+	stop, timeout, becomeLeader, AddVoteToItself;  
 	requestVote, handleRequestVoteRequest, requestVoteSent: mType # Pos # Pos # Pos # Pos;
 	sendReply, handleRequestVoteReply, replyVoteSent: Pos # Bool # Pos # Pos; 
 
@@ -36,37 +36,40 @@ proc
 	% l: List is that contains the log of the node. (Temrn and index)
  	Node(id: Pos, state: State, l: List(Pos), voterLog: voterLog) = 
 
-	% If node is a leader, then the client can send message to that node  
-	((state == leader) -> (sum v:Pos . receive(id, v). Node(l = push(1, l))))
+		% If node is a leader, then the client can send message to that node  
+		((state == leader) -> (sum v:Pos . receive(id, v). Node(l = push(1, l))))
 
-	% The node can stop anytime, if it stops then, it can startup as the follower with log and term unchanged
-	%+ stop . Node(id, follower, l, term)
+		% The node can stop anytime, if it stops then, it can startup as the follower with log and term unchanged
+		%+ stop . Node(id, follower, l, term)
 
-	% if it time out, then it changes to the candidate state and term + 1
-	+ timeout . Node(state = candidate)
-%TODO,: I forget about the term for now 
+		% if it time out, then it changes to the candidate state and term + 1
+		+ timeout . Node(state = candidate)
+		%TODO,: I forget about the term for now 
 
-	% If it is a candiate then it sends the request vote request. 
-	% For now, I assume that the vote request is always true, and the term and log is 1  
-	+ (state == candidate) -> (    
+		% If it is a candiate then it sends the request vote request. 
+		% For now, I assume that the vote request is always true, and the term and log is 1  
+		+ (state == candidate) -> (    
 		% The node vote for itself  
-		(!(id in voterLog)) -> addVoteToItSelf . Node(voterLog = voterLog <| id) 
+			(!(id in voterLog)) -> AddVoteToItself . Node(voterLog = voterLog <| id) 
 		% If d is not in the voterlog, the candidate request vote. 
-		+
-		sum d: Pos . (!(d in voterLog)) -> requestVote(RequestVoteRequest, 1, 1, id, d). Node()
-		+ 	
-		% If d is not in the voterlog, add d in the voter log 
-		sum d: Pos . (!(d in voterLog)) -> handleRequestVoteReply(1, true, id, d). Node(voterLog = voterLog <| d)
-		+ 
-		((#voterLog*2 > N) && (#voterLog < 10)) -> becomeLeader . Node(state = leader))
+			+
+			sum d: Pos . (!(d in voterLog)) -> requestVote(RequestVoteRequest, 1, 1, id, d). Node()
+			+ 	
+			% If d is not in the voterlog, add d in the voter log 
+			sum d: Pos . (!(d in voterLog)) -> handleRequestVoteReply(1, true, id, d). Node(voterLog = voterLog <| d)
+			+ 
+			% Why do I need to limit the voter log I need to clean the vote in some way  
+			% TODO check voterlog it can bot be greate than 10  
+			((#voterLog*2 > N)) -> becomeLeader . Node(state = leader))
 
 	% Any node can handle the Vote Reqeust. 1
 	+ (state != candidate) -> (
-		sum d: Pos . handleRequestVoteRequest(RequestVoteRequest, 1,1,id,d) . sendReply(1, true,id ,d) . Node(id, leader, l, voterLog));       
+		% For the reply, it does not change the state of the node? 
+		sum d: Pos . handleRequestVoteRequest(RequestVoteRequest, 1,1,d,id) . sendReply(1, true,d ,id) . Node());       
 
 init
   allow(
-    { wlog, stop},
+    { stop, timeout, becomeLeader, requestVoteSent, replyVoteSent, AddVoteToItself},
     comm(
       	{send|receive -> wlog,
 		requestVote|handleRequestVoteRequest -> requestVoteSent,
