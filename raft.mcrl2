@@ -1,11 +1,12 @@
 sort State = struct follower | leader | candidate;
-%TODO, decie if mType is approporiate here or not 
+%TODO, Check if mType is neeeded or not  
 sort mType = struct RequestVoteRequest;
 
-% Number of nodes 
+% Global variable for number of nodes  
 map  N: Pos;
 eqn  N = 2;
 
+% Define the push funtion for list 
 map push:  Pos # List(Pos) -> List(Pos);
 
 var  l: List(Pos);
@@ -13,48 +14,55 @@ var  l: List(Pos);
 
 eqn  push(x,l) = x |> l;  
 
-%Variable that maps the the id of Node to boolean. Each not has this variable. If the mapping from is true this means that node i votes for the node that contains voterLog
+%Variable that maps the the id of Node to boolean. 
+%If it maps to true then that node is already voted for the node that contains the voterlog
 sort voterLog = List(Pos);    
 	
 
 
 act
   	send, wlog, receive:Pos # Pos;
-	stop, timeout;  
+	stop, timeout, becomeLeader, addVoteToItSelf;  
 	requestVote, handleRequestVoteRequest, requestVoteSent: mType # Pos # Pos # Pos # Pos;
 	sendReply, handleRequestVoteReply, replyVoteSent: Pos # Bool # Pos # Pos; 
-% I can add the sychornization latter when it is moved.v 
-%I need to check that it is not empty and it is not the head
+
 proc
-  % Client uses list to send messages to a leader node. 
-  Client(l: List(Pos)) = (#l >= 1) -> sum p:Pos . send(p, rhead(l)) .  Client(rtail(l));
+	% Client uses list to send messages to a leader node.    
+	Client(l: List(Pos)) = (#l >= 1) -> sum p:Pos . send(p, rhead(l)) .  Client(rtail(l));
+	
+	% Node process 
+	% id is the id of a node
+	% state: state of the node define by sorted State. There are three states of a node: leader, follower, and candidate  
+	% l: List is that contains the log of the node. (Temrn and index)
+ 	Node(id: Pos, state: State, l: List(Pos), voterLog: voterLog) = 
 
-  Node(id: Pos, state: State, l: List(Pos), voterLog: voterLog) = 
-% If is it is a leader, then the client can send message to that node. 
-((state == leader) -> (sum v:Pos . receive(id, v). Node(id, state, push(1, l), voterLog)))
+	% If node is a leader, then the client can send message to that node  
+	((state == leader) -> (sum v:Pos . receive(id, v). Node(l = push(1, l))))
 
-% The node can stop anytime, if it stops then, it can startup as the follower with log and term unchanged
-%+ stop . Node(id, follower, l, term)
+	% The node can stop anytime, if it stops then, it can startup as the follower with log and term unchanged
+	%+ stop . Node(id, follower, l, term)
 
-% The node can time out, if it time out, then it changes to the candidate state and term + 1
-	+ timeout . Node(id, candidate, l, voterLog)
+	% if it time out, then it changes to the candidate state and term + 1
+	+ timeout . Node(state = candidate)
 %TODO,: I forget about the term for now 
 
-% If it is a candiate then it sends the request vote request. 
-% For now, I assume that the vote request is always true, and the term and log is 1  TODO 
-% It is a bit wheird that I sent many times here TODO 
-	+ (state == candidate) -> 
-		((sum d: Pos . (!(d in voterLog)) -> requestVote(RequestVoteRequest, 1, 1, id, d). Node(id, candidate, l, voterLog <| d))
+	% If it is a candiate then it sends the request vote request. 
+	% For now, I assume that the vote request is always true, and the term and log is 1  
+	+ (state == candidate) -> (    
+		% The node vote for itself  
+		(!(id in voterLog)) -> addVoteToItSelf . Node(voterLog = voterLog <| id) 
+		% If d is not in the voterlog, the candidate request vote. 
+		+
+		sum d: Pos . (!(d in voterLog)) -> requestVote(RequestVoteRequest, 1, 1, id, d). Node()
 		+ 	
-		(sum d: Pos . (!(d in voterLog)) -> handleRequestVoteReply(1, true, id, d). Node(id, candidate, l, voterLog <| d)))
+		% If d is not in the voterlog, add d in the voter log 
+		sum d: Pos . (!(d in voterLog)) -> handleRequestVoteReply(1, true, id, d). Node(voterLog = voterLog <| d)
 		+ 
-		(#voterLog*2 > N) -> Node(id, leader, l, voterLog)
-% TODO, I need to count the vote in here, but I do not yet know how to do think. 
-%TODO I need to add what if they have  
-% To break down now, the easies part it always accept and and check fo tthe mority  
-%send reply term, true, where it comes from 
-	+ sum d: Pos . handleRequestVoteRequest(RequestVoteRequest, 1,1,id,d) . sendReply(1, true,id ,d) . Node(id, leader, l, voterLog);     
-  
+		((#voterLog*2 > N) && (#voterLog < 10)) -> becomeLeader . Node(state = leader))
+
+	% Any node can handle the Vote Reqeust. 1
+	+ (state != candidate) -> (
+		sum d: Pos . handleRequestVoteRequest(RequestVoteRequest, 1,1,id,d) . sendReply(1, true,id ,d) . Node(id, leader, l, voterLog));       
 
 init
   allow(
