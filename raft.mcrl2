@@ -17,13 +17,18 @@ eqn  push(x,l) = x |> l;
 %Variable that maps the the id of Node to boolean. 
 %If it maps to true then that node is already voted for the node that contains the voterlog
 sort voterLog = List(Pos);    
-	
 
 
 act
   	send, wlog, receive:Pos # Pos;
-	stop, timeout, becomeLeader, AddVoteToItself;  
-	requestVote, handleRequestVoteRequest, requestVoteSent: mType # Pos # Pos # Pos # Pos;
+	stop, timeout, becomeLeader, AddVoteToItself,stepDown;  
+	% param1: type of vote request 
+	% param2: current term
+	% param3: last log term 
+	% param4: last log index
+	% param5: source or destination 
+	% param6: source or destination
+	requestVote, handleRequestVoteRequest, requestVoteSent: mType # Pos # Pos # Nat # Pos # Pos;
 	sendReply, handleRequestVoteReply, replyVoteSent: Pos # Bool # Pos # Pos; 
 
 proc
@@ -34,15 +39,17 @@ proc
 	% id is the id of a node
 	% state: state of the node define by sorted State. There are three states of a node: leader, follower, and candidate  
 	% l: List is that contains the log of the node. (Temrn and index)
- 	Node(id: Pos, state: State, l: List(Pos), voterLog: voterLog) = 
-
+	% term of Node  
+	% Votedfor if it does not vote for anyone, it is 0, otherwise the index of the voted node
+ 	Node(id: Pos, state: State, l: List(Pos), voterLog: voterLog, term: Pos, votedFor: Nat) = 
+	(term < 100) -> (
 		% If node is a leader, then the client can send message to that node  
 		((state == leader) -> (sum v:Pos . receive(id, v). Node(l = push(1, l))))
 
 		% The node can stop anytime, if it stops then, it can startup as the follower with log and term unchanged
 		%+ stop . Node(id, follower, l, term)
 
-		% if it time out, then it changes to the candidate state and term + 1
+		% if it time out, then it changes to the candidate state and term + 1 (Timeout here means that we start the the new election )
 		+ timeout . Node(state = candidate)
 		%TODO,: I forget about the term for now 
 
@@ -53,28 +60,32 @@ proc
 			(!(id in voterLog)) -> AddVoteToItself . Node(voterLog = voterLog <| id) 
 		% If d is not in the voterlog, the candidate request vote. 
 			+
-			sum d: Pos . (!(d in voterLog)) -> requestVote(RequestVoteRequest, 1, 1, id, d). Node()
+			sum d: Pos . (!(d in voterLog)) -> requestVote(RequestVoteRequest, term, rhead(l), #l, id, d). Node()
 			+ 	
 			% If d is not in the voterlog, add d in the voter log 
-			sum d: Pos . (!(d in voterLog)) -> handleRequestVoteReply(1, true, id, d). Node(voterLog = voterLog <| d)
+			sum d: Pos . (!(d in voterLog)) -> (handleRequestVoteReply(term, true, id, d). Node(voterLog = voterLog <| d) + handleRequestVoteReply(term, false, id, d). Node())
 			+ 
 			% Why do I need to limit the voter log I need to clean the vote in some way  
-			% TODO check voterlog it can bot be greate than 10  
-			((#voterLog*2 > N)) -> becomeLeader . Node(state = leader))
+			((#voterLog*2 > N)) -> becomeLeader . Node(state = leader)) %TODO change the nextindex 
 
 	% Any node can handle the Vote Reqeust. 1
 	+ (state != candidate) -> (
 		% For the reply, it does not change the state of the node? 
-		sum d: Pos . handleRequestVoteRequest(RequestVoteRequest, 1,1,d,id) . sendReply(1, true,d ,id) . Node());       
+		sum d, llterm, requestTerm: Pos . sum llidx: Nat . handleRequestVoteRequest(RequestVoteRequest, requestTerm, llterm, llidx,d,id) .
+		(term < requestTerm) -> stepDown . Node(term = requestTerm, state = follower, votedFor = 0) <> 
+		(term == requestTerm && 
+		(votedFor == 0 || votedFor == requestTerm) && (llterm > rhead(l) || (llterm ==  rhead(l) && llidx > #l))) -> sendReply(term, true,d ,id).Node(votedFor = d) <> sendReply(term, false, d, id) . Node())  
+		);       
 
+%Should I put step down in the allow node
 init
   allow(
-    { stop, timeout, becomeLeader, requestVoteSent, replyVoteSent, AddVoteToItself},
+    { stop, timeout, becomeLeader, requestVoteSent, replyVoteSent, AddVoteToItself, stepDown},
     comm(
       	{send|receive -> wlog,
 		requestVote|handleRequestVoteRequest -> requestVoteSent,
 		sendReply|handleRequestVoteReply -> replyVoteSent}, 
 	% I chose term to start with 1, but it can also start with 0 
 	% Remeber to change N - N is the number of node
-      Client([1,2]) || Node(1, leader, [], []) || Node(2, follower, [], [])
+      Client([1,2]) || Node(1, leader, [], [], 1, 0) || Node(2, follower, [], [], 1, 0)
   ) ) ;
