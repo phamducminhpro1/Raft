@@ -13,6 +13,7 @@ var  l: List(Pos);
      x: Pos;
 
 eqn  push(x,l) = x |> l;  
+eqn  rhead([]) = 0;
 
 %Variable that maps the the id of Node to boolean. 
 %If it maps to true then that node is already voted for the node that contains the voterlog
@@ -50,16 +51,12 @@ proc
 		%+ stop . Node(id, follower, l, term)
 
 		% if it time out, then it changes to the candidate state and term + 1 (Timeout here means that we start the the new election )
-		+ timeout . Node(state = candidate)
+		+ timeout . Node(state = candidate, term = term+1, votedFor = id, voterLog = [id])
 		%TODO,: I forget about the term for now 
 
 		% If it is a candiate then it sends the request vote request. 
 		% For now, I assume that the vote request is always true, and the term and log is 1  
 		+ (state == candidate) -> (    
-		% The node vote for itself  
-			(!(id in voterLog)) -> AddVoteToItself . Node(voterLog = voterLog <| id) 
-		% If d is not in the voterlog, the candidate request vote. 
-			+
 			sum d: Pos . (!(d in voterLog)) -> requestVote(RequestVoteRequest, term, rhead(l), #l, id, d). Node()
 			+ 	
 			% If d is not in the voterlog, add d in the voter log 
@@ -71,16 +68,16 @@ proc
 	% Any node can handle the Vote Reqeust. 1
 	+ (state != candidate) -> (
 		% For the reply, it does not change the state of the node? 
-		sum d, llterm, requestTerm: Pos . sum llidx: Nat . handleRequestVoteRequest(RequestVoteRequest, requestTerm, llterm, llidx,d,id) .
+		sum d, lastlogterm, requestTerm: Pos . sum lastlogindex: Nat . handleRequestVoteRequest(RequestVoteRequest, requestTerm, lastlogterm, lastlogindex,d,id) .
 		(term < requestTerm) -> stepDown . Node(term = requestTerm, state = follower, votedFor = 0) <> 
 		(term == requestTerm && 
-		(votedFor == 0 || votedFor == requestTerm) && (llterm > rhead(l) || (llterm ==  rhead(l) && llidx > #l))) -> sendReply(term, true,d ,id).Node(votedFor = d) <> sendReply(term, false, d, id) . Node())  
+		(votedFor == 0 || votedFor == requestTerm) && (lastlogterm > rhead(l) || (lastlogterm ==  rhead(l) && lastlogindex >= #l))) -> sendReply(term, true,d ,id).Node(votedFor = d) <> sendReply(term, false, d, id) . Node())  
 		);       
 
 %Should I put step down in the allow node
 init
   allow(
-    { stop, timeout, becomeLeader, requestVoteSent, replyVoteSent, AddVoteToItself, stepDown},
+    { stop, timeout, becomeLeader, requestVoteSent, replyVoteSent, AddVoteToItself, stepDown, wlog},
     comm(
       	{send|receive -> wlog,
 		requestVote|handleRequestVoteRequest -> requestVoteSent,
