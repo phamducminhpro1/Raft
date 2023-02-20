@@ -9,12 +9,6 @@ eqn  N = 2;
 % Define the push funtion for list 
 map push:  Pos # List(Pos) -> List(Pos);
 
-var  l: List(Pos);
-     x: Pos;
-
-eqn  push(x,l) = x |> l;  
-eqn  rhead([]) = 0;
-
 %Variable that maps the the id of Node to boolean. 
 %If it maps to true then that node is already voted for the node that contains the voterlog
 sort voterLog = List(Pos);    
@@ -43,9 +37,9 @@ proc
 	% term of Node  
 	% Votedfor if it does not vote for anyone, it is 0, otherwise the index of the voted node
  	Node(id: Pos, state: State, l: List(Pos), voterLog: voterLog, term: Pos, votedFor: Nat) = 
-	(term < 100) -> (
+	(term < 15) -> (
 		% If node is a leader, then the client can send message to that node  
-		((state == leader) -> (sum v:Pos . receive(id, v). Node(l = push(1, l))))
+		((state == leader) -> (sum v:Pos . receive(id, v). Node(l = l ++ [term])))
 
 		% The node can stop anytime, if it stops then, it can startup as the follower with log and term unchanged
 		%+ stop . Node(id, follower, l, term)
@@ -84,5 +78,5 @@ init
 		sendReply|handleRequestVoteReply -> replyVoteSent}, 
 	% I chose term to start with 1, but it can also start with 0 
 	% Remeber to change N - N is the number of node
-      Client([1,2]) || Node(1, leader, [], [], 1, 0) || Node(2, follower, [], [], 1, 0)
+      Client([1,2]) || Node(1, leader, [1], [], 1, 0) || Node(2, follower, [1], [], 1, 0)
   ) ) ;
