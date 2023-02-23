@@ -3,8 +3,9 @@ sort State = struct follower | leader | candidate;
 sort mType = struct RequestVoteRequest;
 
 % Global variable for number of nodes  
-map  N: Nat;
+map  N, BATCH_SIZE: Nat;
 eqn  N = 2;
+	BATCH_SIZE = 1; 
 
 % Define the push funtion for list 
 map push:  Nat # List(Nat) -> List(Nat);
@@ -41,6 +42,15 @@ eqn slice(a, x, y) = growSlice([], a, x, y, 0);
 	n >= y -> growSlice(b, a, x, y, n) = b;
 	(n >= x && n < y) -> growSlice(b, a, x, y, n) = growSlice(b <| a.abs(n), a, x, y, n + 1);
 
+map replace: List(Nat) # Nat # Nat -> List(Nat);  
+
+var a: List(Nat);
+	i: Nat; 
+	x: Nat; 
+
+eqn (a . i != x) -> replace(a, i, x) = slice(a, 0, i) ++ [x] ++ slice(a, i+1, #a);
+	(a . i == x) -> replace(a, i, x) = a;
+
 act
   	send, wlog, receive:Nat # Nat;
 	stop, timeout, becomeLeader, AddVoteToItself,stepDown,test;  
@@ -55,7 +65,7 @@ act
 %(term, prevIndex, prevTerm, entries, commitIndex, from, to)
 	%param 1
 	sendAppendEntriesRequest,handleAppendEntriesRequest, appendEntriesRequestSent: Nat # Int # Nat # List(Nat) # Int # Nat # Nat; 
-	sendAppendEntriesReply, handleAppendEntriesReply: Nat # Bool # Nat # Nat # Int # Nat # List(Nat) # Int # Nat # Nat; 
+	sendAppendEntriesReply, handleAppendEntriesReply, appendEntriesRequestReplied: Nat # Bool # Nat # Nat # Int # Nat # List(Nat) # Int # Nat # Nat; 
 
 
 proc
@@ -101,11 +111,11 @@ proc
 		
 	%TODO Previous index is always greater or equal to 0. 
 	% i need to fix this one a lot haha.
-	+ sum peer: Nat . (peer < N && state == leader && nextIndex . peer < #l) -> ((matchIndex . peer +1 < nextIndex . peer) 
+	+ sum peer: Nat . (peer != id && peer < N && state == leader && nextIndex . peer < #l) -> ((matchIndex . peer +1 < nextIndex . peer) 
 		-> 
-		sendAppendEntriesRequest(term, nextIndex . peer - 1, logTerm(l,  (nextIndex . peer) - 1), slice(l, nextIndex . peer - 1, nextIndex . peer - 1), nextIndex . peer - 1, id, peer)
+		sendAppendEntriesRequest(term, nextIndex . peer - 1, logTerm(l,  (nextIndex . peer) - 1), slice(l, nextIndex . peer - 1, nextIndex . peer - 1), min(commitIndex, nextIndex . peer - 1), id, peer)
 		<> 
-		sendAppendEntriesRequest(term, nextIndex . peer - 1, logTerm(l,  (nextIndex . peer) - 1), slice(l, nextIndex . peer - 1, min(nextIndex . peer - 1 + 1, #l)),min(nextIndex . peer - 1 + 1, #l), id, peer)
+		sendAppendEntriesRequest(term, nextIndex . peer - 1, logTerm(l,  (nextIndex . peer) - 1), slice(l, nextIndex . peer - 1, min((nextIndex . peer) - 1 + BATCH_SIZE, #l)), min(commitIndex, (nextIndex . peer) - 1 + BATCH_SIZE), id, peer)
 		) . Node()
 	
 	+ sum requestTerm: Nat, requestPreIndex: Int, requestPreTerm: Nat, requestEntires: List(Nat), requestCommitIndex: Int, from: Nat, to: Nat . 
@@ -117,22 +127,26 @@ proc
 			-> sendAppendEntriesReply(term, true, abs(requestPreIndex) + #requestEntires, requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, to) . Node(l = slice(l, 0, abs(requestPreIndex)) ++ requestEntires, state = follower)
 			<> sendAppendEntriesReply(term, false, 0, requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, to)).Node()
 
-%	+ sum replyTerm: Nat, success: Bool, matchIndex: Nat, requestTerm: Nat, requestPreIndex: Int, requestPreTerm: Nat, requestEntires: List(Nat), requestCommitIndex: Int, from: Nat, to: Nat . 
-%		handleAppendEntriesReply(replyTerm, success, matchIndex, requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, to) . Node()
+	+ sum replyTerm: Nat, success: Bool, replyMatchIndex: Nat, requestTerm: Nat, requestPreIndex: Int, requestPreTerm: Nat, requestEntires: List(Nat), requestCommitIndex: Int, from: Nat, to: Nat . 
+		handleAppendEntriesReply(replyTerm, success, replyMatchIndex, requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, to) 
+		. (term < replyTerm) ->  stepDown . Node(term = replyTerm, state = follower, votedFor = 0) 
+							 <> ((state == leader && term == replyTerm)  -> ((success == true) -> test . Node(matchIndex = replace(matchIndex, to, max(matchIndex . to, replyMatchIndex)), nextIndex = replace(nextIndex, to, replyMatchIndex + 1))
+																							<>  test . Node(nextIndex = replace(nextIndex, to, max(1, nextIndex . to - 1))))) %ToDo, I need to test this. 
 	);      
 
 
 %Should I put step down in the allow node
 init
   allow(
-    { stop, timeout, becomeLeader, requestVoteSent, replyVoteSent, AddVoteToItself, stepDown, wlog, test},
+    { stop, timeout, becomeLeader, requestVoteSent, replyVoteSent, AddVoteToItself, stepDown, wlog, test, appendEntriesRequestSent, appendEntriesRequestReplied},
     comm(
       	{send|receive -> wlog,
 		requestVote|handleRequestVoteRequest -> requestVoteSent,
 		sendReply|handleRequestVoteReply -> replyVoteSent,
-		sendAppendEntriesRequest | handleAppendEntriesRequest -> appendEntriesRequestSent}, 
+		sendAppendEntriesRequest | handleAppendEntriesRequest -> appendEntriesRequestSent,
+		sendAppendEntriesReply | handleAppendEntriesReply -> appendEntriesRequestReplied}, 
 	% I chose term to start with 1, but it can also start with 0 
 	% Remeber to change N - N is the number of node
 	% To do make the function to initiliaze the index haha  
-      Client([1,2]) || Node(1, leader, [0,2,2], [], 1, 0, initList(N, 1, 0), initList(N, 0, 0), 0) || Node(2, follower, [0], [], 1, 0, initList(N, 1, 0), initList(N, 0, 0), 0)
+      Client([3,4]) || Node(1, leader, [0,2], [], 1, 0, initList(N, 1, 0), initList(N, 0, 0), 0) || Node(2, follower, [0], [], 1, 0, initList(N, 1, 0), initList(N, 0, 0), 0)
   ) ) ;
