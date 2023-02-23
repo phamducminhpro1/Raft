@@ -51,7 +51,7 @@ eqn (a . i != x) -> replace(a, i, x) = slice(a, 0, i) ++ [x] ++ slice(a, i+1, #a
 	(a . i == x) -> replace(a, i, x) = a;
 
 act
-  	send, wlog, receive:Nat # Nat;
+  	sendClientRequest, wlog, receiveClientRequest: Nat;
 	stop, timeout, becomeLeader, AddVoteToItself, stepDown, test;  
 	% param1: type of vote request 
 	% param2: current term
@@ -68,8 +68,8 @@ act
 
 
 proc
-	% Client uses list to send messages to a leader node.    
-	Client(l: List(Nat)) = (#l >= 1) -> sum p:Nat . send(p, rhead(l)) .  Client(rtail(l));
+	% Client uses list to sendClientRequest messages to a leader node.    
+	Client(num: Nat) = (num >= 1) -> sendClientRequest(num) .  Client(num = abs(num-1));
 	
 	% Node process 
 	% id is the id of a node
@@ -79,8 +79,8 @@ proc
 	% Votedfor if it does not vote for anyone, it is 0, otherwise the index of the voted node
  	Node(id: Nat, state: State, l: List(Nat), voterLog: voterLog, term: Nat, votedFor: Nat, nextIndex: List(Nat), matchIndex: List(Nat), commitIndex: Nat) = 
 	(term < 15) -> (
-		% If node is a leader, then the client can send message to that node  
-		((state == leader) -> (sum v:Nat . receive(id, v). Node(l = l ++ [term])))
+		% If node is a leader, then the client can sendClientRequest message to that node  
+		((state == leader) -> (sum v:Nat . receiveClientRequest(v). Node(l = l ++ [term])))
 
 		% The node can stop anytime, if it stops then, it can startup as the follower with log and term unchanged
 		%+ stop . Node(id, follower, l, term)
@@ -142,9 +142,9 @@ proc
 %Should I put step down in the allow node
 init
   allow(
-    { stop, timeout, becomeLeader, requestVoteSent, replyVoteSent, AddVoteToItself, stepDown, wlog, test, appendEntriesRequestSent, appendEntriesRequestReplied},
+    { stop, timeout, becomeLeader, requestVoteSent, replyVoteSent, AddVoteToItself, stepDown, wlog, test, appendEntriesRequestSent, appendEntriesRequestReplied, sendAppendEntriesRequest},
     comm(
-      	{send|receive -> wlog,
+      	{sendClientRequest|receiveClientRequest -> wlog,
 		requestVote|handleRequestVoteRequest -> requestVoteSent,
 		sendReply|handleRequestVoteReply -> replyVoteSent,
 		sendAppendEntriesRequest | handleAppendEntriesRequest -> appendEntriesRequestSent,
@@ -152,5 +152,5 @@ init
 	% I chose term to start with 1, but it can also start with 0 
 	% Remeber to change N - N is the number of node
 	% To do make the function to initiliaze the index haha  
-      Client([3,4]) || Node(1, follower, [], [], 1, 0, initList(N, 1, 0), initList(N, 0, 0), 0) || Node(2, follower, [], [], 1, 0, initList(N, 1, 0), initList(N, 0, 0), 0)
+      Client(4) || Node(1, follower, [], [], 1, 0, initList(N, 1, 0), initList(N, 0, 0), 0) || Node(2, follower, [], [], 1, 0, initList(N, 1, 0), initList(N, 0, 0), 0)
   ) ) ;
