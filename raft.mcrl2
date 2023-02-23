@@ -3,32 +3,64 @@ sort State = struct follower | leader | candidate;
 sort mType = struct RequestVoteRequest;
 
 % Global variable for number of nodes  
-map  N: Pos;
+map  N: Nat;
 eqn  N = 2;
 
 % Define the push funtion for list 
-map push:  Pos # List(Pos) -> List(Pos);
+map push:  Nat # List(Nat) -> List(Nat);
 
 %Variable that maps the the id of Node to boolean. 
 %If it maps to true then that node is already voted for the node that contains the voterlog
-sort voterLog = List(Pos);    
+sort voterLog = List(Nat);    
 
+map logTerm: List(Nat) # Int -> Nat;
+	
+
+var  l: List(Nat);
+     x: Int;
+
+eqn	(x < 1) -> logTerm(l, x) = 0;
+	(x > #l) -> logTerm(l, x) = 0;
+	(x >= 1 && x <= #l) -> logTerm(l,x) = l . abs(x);   
+
+map initList: Nat # Nat # Nat -> List(Nat);   
+
+var size, v, c: Nat; 
+
+eqn (c >= size) -> initList(size, v, c) = []; 
+	(c < size) -> initList(size, v, c) = v |> initList(size, v, c+1);
+
+map slice: List(Nat) # Int # Int -> List(Nat);  
+	growSlice: List(Nat) # List(Nat) # Int # Int # Int -> List(Nat); 
+
+var a, b: List(Nat);
+	x, y, n: Int; 	
+ 
+eqn slice(a, x, y) = growSlice([], a, x, y, 0);
+	n < x -> growSlice(b, a, x, y, n) = growSlice(b, a, x, y, n + 1);
+	n >= y -> growSlice(b, a, x, y, n) = b;
+	(n >= x && n < y) -> growSlice(b, a, x, y, n) = growSlice(b <| a.abs(n), a, x, y, n + 1);
 
 act
-  	send, wlog, receive:Pos # Pos;
-	stop, timeout, becomeLeader, AddVoteToItself,stepDown;  
+  	send, wlog, receive:Nat # Nat;
+	stop, timeout, becomeLeader, AddVoteToItself,stepDown,test;  
 	% param1: type of vote request 
 	% param2: current term
 	% param3: last log term 
 	% param4: last log index
 	% param5: source or destination 
 	% param6: source or destination
-	requestVote, handleRequestVoteRequest, requestVoteSent: mType # Pos # Pos # Nat # Pos # Pos;
-	sendReply, handleRequestVoteReply, replyVoteSent: Pos # Bool # Pos # Pos; 
+	requestVote, handleRequestVoteRequest, requestVoteSent: mType # Nat # Nat # Nat # Nat # Nat;
+	sendReply, handleRequestVoteReply, replyVoteSent: Nat # Bool # Nat # Nat; 
+%(term, prevIndex, prevTerm, entries, commitIndex, from, to)
+	%param 1
+	sendAppendEntriesRequest,handleAppendEntriesRequest, appendEntriesRequestSent: Nat # Int # Nat # List(Nat) # Int # Nat # Nat; 
+	sendAppendEntriesReply, handleAppendEntriesReply: Nat # Bool # Nat # Nat # Int # Nat # List(Nat) # Int # Nat # Nat; 
+
 
 proc
 	% Client uses list to send messages to a leader node.    
-	Client(l: List(Pos)) = (#l >= 1) -> sum p:Pos . send(p, rhead(l)) .  Client(rtail(l));
+	Client(l: List(Nat)) = (#l >= 1) -> sum p:Nat . send(p, rhead(l)) .  Client(rtail(l));
 	
 	% Node process 
 	% id is the id of a node
@@ -36,10 +68,10 @@ proc
 	% l: List is that contains the log of the node. (Temrn and index)
 	% term of Node  
 	% Votedfor if it does not vote for anyone, it is 0, otherwise the index of the voted node
- 	Node(id: Pos, state: State, l: List(Pos), voterLog: voterLog, term: Pos, votedFor: Nat) = 
+ 	Node(id: Nat, state: State, l: List(Nat), voterLog: voterLog, term: Nat, votedFor: Nat, nextIndex: List(Nat), matchIndex: List(Nat), commitIndex: Nat) = 
 	(term < 15) -> (
 		% If node is a leader, then the client can send message to that node  
-		((state == leader) -> (sum v:Pos . receive(id, v). Node(l = l ++ [term])))
+		((state == leader) -> (sum v:Nat . receive(id, v). Node(l = l ++ [term])))
 
 		% The node can stop anytime, if it stops then, it can startup as the follower with log and term unchanged
 		%+ stop . Node(id, follower, l, term)
@@ -51,10 +83,10 @@ proc
 		% If it is a candiate then it sends the request vote request. 
 		% For now, I assume that the vote request is always true, and the term and log is 1  
 		+ (state == candidate) -> (    
-			sum d: Pos . (!(d in voterLog)) -> requestVote(RequestVoteRequest, term, rhead(l), #l, id, d). Node()
+			sum d: Nat . (!(d in voterLog)) -> requestVote(RequestVoteRequest, term, rhead(l), #l, id, d). Node()
 			+ 	
 			% If d is not in the voterlog, add d in the voter log 
-			sum d: Pos . (!(d in voterLog)) -> (handleRequestVoteReply(term, true, id, d). Node(voterLog = voterLog <| d) + handleRequestVoteReply(term, false, id, d). Node())
+			sum d: Nat . (!(d in voterLog)) -> (handleRequestVoteReply(term, true, id, d). Node(voterLog = voterLog <| d) + handleRequestVoteReply(term, false, id, d). Node())
 			+ 
 			% Why do I need to limit the voter log I need to clean the vote in some way  
 			((#voterLog*2 > N)) -> becomeLeader . Node(state = leader)) %TODO change the nextindex 
@@ -62,21 +94,45 @@ proc
 	% Any node can handle the Vote Reqeust. 1
 	+ (state != candidate) -> (
 		% For the reply, it does not change the state of the node? 
-		sum d, lastlogterm, requestTerm: Pos . sum lastlogindex: Nat . handleRequestVoteRequest(RequestVoteRequest, requestTerm, lastlogterm, lastlogindex,d,id) .
+		sum d, lastlogterm, requestTerm: Nat . sum lastlogindex: Nat . handleRequestVoteRequest(RequestVoteRequest, requestTerm, lastlogterm, lastlogindex,d,id) .
 		(term < requestTerm) -> stepDown . Node(term = requestTerm, state = follower, votedFor = 0) <> 
 		(term == requestTerm && 
 		(votedFor == 0 || votedFor == requestTerm) && (lastlogterm > rhead(l) || (lastlogterm ==  rhead(l) && lastlogindex >= #l))) -> sendReply(term, true,d ,id).Node(votedFor = d) <> sendReply(term, false, d, id) . Node())  
-		);       
+		
+	%TODO Previous index is always greater or equal to 0. 
+	% i need to fix this one a lot haha.
+	+ sum peer: Nat . (peer < N && state == leader && nextIndex . peer < #l) -> ((matchIndex . peer +1 < nextIndex . peer) 
+		-> 
+		sendAppendEntriesRequest(term, nextIndex . peer - 1, logTerm(l,  (nextIndex . peer) - 1), slice(l, nextIndex . peer - 1, nextIndex . peer - 1), nextIndex . peer - 1, id, peer)
+		<> 
+		sendAppendEntriesRequest(term, nextIndex . peer - 1, logTerm(l,  (nextIndex . peer) - 1), slice(l, nextIndex . peer - 1, min(nextIndex . peer - 1 + 1, #l)),min(nextIndex . peer - 1 + 1, #l), id, peer)
+		) . Node()
+	
+	+ sum requestTerm: Nat, requestPreIndex: Int, requestPreTerm: Nat, requestEntires: List(Nat), requestCommitIndex: Int, from: Nat, to: Nat . 
+		handleAppendEntriesRequest(requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, to)
+		. 
+		(term < requestTerm) -> (stepDown . Node(term = requestTerm, state = follower, votedFor = 0)) 
+		<> 
+		((term == requestTerm && (requestPreIndex == 0 || requestPreIndex <= #l && logTerm(l, requestPreIndex) ==  requestPreTerm)) 	
+			-> sendAppendEntriesReply(term, true, abs(requestPreIndex) + #requestEntires, requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, to) . Node(l = slice(l, 0, abs(requestPreIndex)) ++ requestEntires, state = follower)
+			<> sendAppendEntriesReply(term, false, 0, requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, to)).Node()
+
+%	+ sum replyTerm: Nat, success: Bool, matchIndex: Nat, requestTerm: Nat, requestPreIndex: Int, requestPreTerm: Nat, requestEntires: List(Nat), requestCommitIndex: Int, from: Nat, to: Nat . 
+%		handleAppendEntriesReply(replyTerm, success, matchIndex, requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, to) . Node()
+	);      
+
 
 %Should I put step down in the allow node
 init
   allow(
-    { stop, timeout, becomeLeader, requestVoteSent, replyVoteSent, AddVoteToItself, stepDown, wlog},
+    { stop, timeout, becomeLeader, requestVoteSent, replyVoteSent, AddVoteToItself, stepDown, wlog, test},
     comm(
       	{send|receive -> wlog,
 		requestVote|handleRequestVoteRequest -> requestVoteSent,
-		sendReply|handleRequestVoteReply -> replyVoteSent}, 
+		sendReply|handleRequestVoteReply -> replyVoteSent,
+		sendAppendEntriesRequest | handleAppendEntriesRequest -> appendEntriesRequestSent}, 
 	% I chose term to start with 1, but it can also start with 0 
 	% Remeber to change N - N is the number of node
-      Client([1,2]) || Node(1, leader, [1], [], 1, 0) || Node(2, follower, [1], [], 1, 0)
+	% To do make the function to initiliaze the index haha  
+      Client([1,2]) || Node(1, leader, [0,2,2], [], 1, 0, initList(N, 1, 0), initList(N, 0, 0), 0) || Node(2, follower, [0], [], 1, 0, initList(N, 1, 0), initList(N, 0, 0), 0)
   ) ) ;
