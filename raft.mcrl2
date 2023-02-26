@@ -52,7 +52,7 @@ eqn (a . i != x) -> replace(a, i, x) = slice(a, 0, i) ++ [x] ++ slice(a, i+1, #a
 
 act
   	sendClientRequest, wlog, receiveClientRequest: Nat;
-	stop, timeout, becomeLeader, AddVoteToItself, stepDown, test;  
+	stop, timeout, becomeLeader, AddVoteToItself, stepDown, test, testHandle;  
 	% param1: type of vote request 
 	% param2: current term
 	% param3: last log term 
@@ -62,8 +62,24 @@ act
 	requestVote, handleRequestVoteRequest, requestVoteSent: mType # Nat # Nat # Nat # Nat # Nat;
 	sendReply, handleRequestVoteReply, replyVoteSent: Nat # Bool # Nat # Nat; 
 %(term, prevIndex, prevTerm, entries, commitIndex, from, to)
-	%param 1
+	%param 1: current term of the source 
+	%param 2: prevIndex 
+	%param 3: prevTerm 
+	%param 4: entries 
+	%param 5: commitIndex 
+	%param 5: source or destination 
+	%param 6: source or destination  
 	sendAppendEntriesRequest,handleAppendEntriesRequest, appendEntriesRequestSent: Nat # Int # Nat # List(Nat) # Int # Nat # Nat; 
+	%param 1: current term of the desitnation 
+	%param 2: sucess or not (true is succes, otherwise not)
+	%param 3: matchIndex  
+	%param 4: current term
+	%param 5: prevIndex 
+	%param 6: prevTerm 
+	%param 7: entries 
+	%param 8: commitIndex 
+	%param 9: source or destination 
+	%param 10: source or destination
 	sendAppendEntriesReply, handleAppendEntriesReply, appendEntriesRequestReplied: Nat # Bool # Nat # Nat # Int # Nat # List(Nat) # Int # Nat # Nat; 
 
 
@@ -121,9 +137,9 @@ proc
 		<> 
 		sendAppendEntriesRequest(term, nextIndex . peer - 1, logTerm(l,  (nextIndex . peer) - 1), slice(l, nextIndex . peer - 1, min((nextIndex . peer) - 1 + BATCH_SIZE, #l)), min(commitIndex, (nextIndex . peer) - 1 + BATCH_SIZE), id, peer)
 		) . Node()
-	
+
 	+ sum requestTerm: Nat, requestPreIndex: Int, requestPreTerm: Nat, requestEntires: List(Nat), requestCommitIndex: Int, from: Nat. 
-		handleAppendEntriesRequest(requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, id)
+		handleAppendEntriesRequest(requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, id) . testHandle
 		. 
 		(term < requestTerm) -> (stepDown . Node(term = requestTerm, state = follower, votedFor = 0)) 
 		<> 
@@ -135,14 +151,15 @@ proc
 		handleAppendEntriesReply(replyTerm, success, replyMatchIndex, requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, to) 
 		. (term < replyTerm) ->  stepDown . Node(term = replyTerm, state = follower, votedFor = 0) 
 							 <> ((state == leader && term == replyTerm)  -> ((success == true) -> test . Node(matchIndex = replace(matchIndex, to, max(matchIndex . to, replyMatchIndex)), nextIndex = replace(nextIndex, to, replyMatchIndex + 1))
-																							<>  test . Node(nextIndex = replace(nextIndex, to, max(1, nextIndex . to - 1))))) %ToDo, I need to test this. 
+																							<>  test . Node(nextIndex = replace(nextIndex, to, max(1, nextIndex . to - 1))))) %ToDo, I need to test this.
+	
 	);      
 
 
 %Should I put step down in the allow node
 init
   allow(
-    { stop, timeout, becomeLeader, requestVoteSent, replyVoteSent, AddVoteToItself, stepDown, wlog, test, appendEntriesRequestSent, appendEntriesRequestReplied, sendAppendEntriesRequest},
+    { stop, timeout, becomeLeader, requestVoteSent, replyVoteSent, AddVoteToItself, stepDown, wlog, test, appendEntriesRequestSent, appendEntriesRequestReplied, sendAppendEntriesRequest, testHandle, sendAppendEntriesReply},
     comm(
       	{sendClientRequest|receiveClientRequest -> wlog,
 		requestVote|handleRequestVoteRequest -> requestVoteSent,
@@ -152,5 +169,5 @@ init
 	% I chose term to start with 1, but it can also start with 0 
 	% Remeber to change N - N is the number of node
 	% To do make the function to initiliaze the index haha  
-      Client(4) || Node(1, follower, [], [], 1, 0, initList(N, 1, 0), initList(N, 0, 0), 0) || Node(2, follower, [], [], 1, 0, initList(N, 1, 0), initList(N, 0, 0), 0)
+      Client(4) || Node(0, follower, [], [], 1, 0, initList(N, 1, 0), initList(N, 0, 0), 0) || Node(1, follower, [], [], 1, 0, initList(N, 1, 0), initList(N, 0, 0), 0)
   ) ) ;
