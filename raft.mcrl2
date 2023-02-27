@@ -58,6 +58,23 @@ var a: List(Nat);
 eqn (a . i != x) -> replace(a, i, x) = slice(a, 0, i) ++ [x] ++ slice(a, i+1, #a);
 	(a . i == x) -> replace(a, i, x) = a;
 
+map sortAssendingOrder: List(Nat) -> List(Nat);
+	sortAssendingOrderHelper: List(Nat) # List(Nat) -> List(Nat);
+	insert: List(Nat) # Nat -> List(Nat); 
+	insertHelper: List(Nat) # List(Nat) # Nat -> List(Nat); 
+
+var l, ls: List(Nat);
+	x: Nat;
+
+eqn	sortAssendingOrder(l) = sortAssendingOrderHelper(l, []);
+	(#l == 0) -> sortAssendingOrderHelper(l, ls) = ls; 
+	(#l > 0) -> sortAssendingOrderHelper(l, ls) = sortAssendingOrderHelper(tail(l), insert(ls, head(l)));
+	insert(l,x) = insertHelper([], l, x);
+	(#l == 0) -> insertHelper(ls, l, x) = ls <| x; 
+	(#l > 0 && head(l) < x) -> insertHelper(ls, l, x) = insertHelper(ls <| head(l), tail(l), x);
+	(#l > 0 && head(l) >= x) -> insertHelper(ls, l, x) = (ls <| x) ++ l; 
+
+
 act
   	sendClientRequest, wlog, receiveClientRequest: Nat;
 	stop, timeout, becomeLeader, AddVoteToItself, stepDown, test, testHandle, resume;  
