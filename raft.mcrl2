@@ -77,7 +77,7 @@ eqn	sortAssendingOrder(l) = sortAssendingOrderHelper(l, []);
 
 act
   	sendClientRequest, wlog, receiveClientRequest: Nat;
-	stop, timeout, becomeLeader, AddVoteToItself, stepDown, test, testHandle, resume;  
+	stop, timeout, becomeLeader, AddVoteToItself, stepDown, test, testHandle, resume, advanceCommitIndex;  
 	% param1: type of vote request 
 	% param2: current term
 	% param3: last log term 
@@ -120,9 +120,9 @@ proc
 	% Votedfor if it does not vote for anyone, it is 0, otherwise the index of the voted node
  	Node(id: Nat, state: State, l: List(Nat), voterLog: voterLog, term: Nat, votedFor: Nat, nextIndex: List(Nat), matchIndex: List(Nat), commitIndex: Nat) = 
 	(term < 5) -> (
-		% If node is a leader, then the client can sendClientRequest message to that node  
-		((state == leader) -> (sum v:Nat . receiveClientRequest(v). Node(l = l ++ [term])))
-
+		% If node is a leader, then the client can sendClientRequest message to that node and update the matchIndex of that node
+		((state == leader) -> (sum v:Nat . receiveClientRequest(v). Node(l = l ++ [term], matchIndex = replace(matchIndex, id, #l+1))))
+		
 		% The node can stop anytime, if it stops then, it can startup as the follower with log and term unchanged
 		+ (state != crash) -> stop . Node(state = crash)
 
@@ -179,13 +179,16 @@ proc
 							 <> ((state == leader && term == replyTerm)  -> ((success == true) -> test . Node(matchIndex = replace(matchIndex, to, max(matchIndex . to, replyMatchIndex)), nextIndex = replace(nextIndex, to, replyMatchIndex + 1))
 																							<>  test . Node(nextIndex = replace(nextIndex, to, max(1, nextIndex . to - 1)))))) %ToDo, I need to test this.
 	
+	% When the state is leader and the logterm %TODO is equal to its term, then advanceCommitIndex. We use floor to change from Real to Int and abs to change from Int to Nat. 
+	+ (state == leader && logTerm(l, #l) == term) -> advanceCommitIndex . Node(commitIndex = sortAssendingOrder(matchIndex) . abs(floor(N/2)))
+
 	);      
 
 
 %Should I put step down in the allow node
 init
   allow(
-    { stop, timeout, becomeLeader, requestVoteSent, replyVoteSent, AddVoteToItself, stepDown, wlog, test, appendEntriesRequestSent, appendEntriesRequestReplied, sendAppendEntriesRequest, testHandle, sendAppendEntriesReply, resume},
+    { stop, timeout, becomeLeader, requestVoteSent, replyVoteSent, AddVoteToItself, stepDown, wlog, test, appendEntriesRequestSent, appendEntriesRequestReplied, sendAppendEntriesRequest, testHandle, sendAppendEntriesReply, resume,advanceCommitIndex},
     comm(
       	{sendClientRequest|receiveClientRequest -> wlog,
 		requestVote|handleRequestVoteRequest -> requestVoteSent,
