@@ -1,10 +1,18 @@
-sort State = struct follower | leader | candidate;
+%  This is the formal specification for the Raft consensus algorithm.
+%
+%  Copyright 2023 Pham Duc Minh 
+%  TODO add license 
+%
+
+% Server states
+sort State = struct follower | leader | candidate | crash;
+
 %TODO, Check if mType is neeeded or not  
 sort mType = struct RequestVoteRequest;
 
 % Global variable for number of nodes  
 map  N, BATCH_SIZE: Nat;
-eqn  N = 2;
+eqn  N = 3;
 	BATCH_SIZE = 1; 
 
 % Define the push funtion for list 
@@ -52,7 +60,7 @@ eqn (a . i != x) -> replace(a, i, x) = slice(a, 0, i) ++ [x] ++ slice(a, i+1, #a
 
 act
   	sendClientRequest, wlog, receiveClientRequest: Nat;
-	stop, timeout, becomeLeader, AddVoteToItself, stepDown, test, testHandle;  
+	stop, timeout, becomeLeader, AddVoteToItself, stepDown, test, testHandle, resume;  
 	% param1: type of vote request 
 	% param2: current term
 	% param3: last log term 
@@ -94,17 +102,18 @@ proc
 	% term of Node  
 	% Votedfor if it does not vote for anyone, it is 0, otherwise the index of the voted node
  	Node(id: Nat, state: State, l: List(Nat), voterLog: voterLog, term: Nat, votedFor: Nat, nextIndex: List(Nat), matchIndex: List(Nat), commitIndex: Nat) = 
-	(term < 15) -> (
+	(term < 5) -> (
 		% If node is a leader, then the client can sendClientRequest message to that node  
 		((state == leader) -> (sum v:Nat . receiveClientRequest(v). Node(l = l ++ [term])))
 
 		% The node can stop anytime, if it stops then, it can startup as the follower with log and term unchanged
-		%+ stop . Node(id, follower, l, term)
+		+ (state != crash) -> stop . Node(state = crash)
 
+		+ (state == crash) -> resume . Node(state = follower)
 		% if it time out, then it changes to the candidate state and term + 1 (Timeout here means that we start the the new election )
 		+ (state == follower || state == candidate) -> timeout . Node(state = candidate, term = term+1, votedFor = id, voterLog = [id], matchIndex = initList(N, 0, 0), nextIndex = initList(N, 1, 0))
 		%TODO,: I forget about the term for now 
-
+		
 		% If it is a candiate then it sends the request vote request. 
 		% For now, I assume that the vote request is always true, and the term and log is 1  
 		% TODO deltet the requestVoterRequest
@@ -120,7 +129,7 @@ proc
 			((#voterLog*2 > N)) -> becomeLeader . Node(state = leader, nextIndex = initList(N, #l+1, 0))) 
 
 	% Any node can handle the Vote Reqeust. 1 %Todo delete candidate for the vote request becaues all node can handle this
-	+ (state != candidate) -> (
+	+ (state != candidate && state != crash) -> (
 		% For the reply, it does not change the state of the node? 
 		sum d, lastlogterm, requestTerm: Nat . sum lastlogindex: Nat . handleRequestVoteRequest(RequestVoteRequest, requestTerm, lastlogterm, lastlogindex,d,id) .
 		(term < requestTerm) -> stepDown . Node(term = requestTerm, state = follower, votedFor = 0) 
@@ -138,20 +147,20 @@ proc
 		sendAppendEntriesRequest(term, nextIndex . peer - 1, logTerm(l,  (nextIndex . peer) - 1), slice(l, nextIndex . peer - 1, min((nextIndex . peer) - 1 + BATCH_SIZE, #l)), min(commitIndex, (nextIndex . peer) - 1 + BATCH_SIZE), id, peer)
 		) . Node()
 
-	+ sum requestTerm: Nat, requestPreIndex: Int, requestPreTerm: Nat, requestEntires: List(Nat), requestCommitIndex: Int, from: Nat. 
+	+ (state != crash) -> (sum requestTerm: Nat, requestPreIndex: Int, requestPreTerm: Nat, requestEntires: List(Nat), requestCommitIndex: Int, from: Nat. 
 		handleAppendEntriesRequest(requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, id) . testHandle
 		. 
 		(term < requestTerm) -> (stepDown . Node(term = requestTerm, state = follower, votedFor = 0)) 
 		<> 
 		((term == requestTerm && (requestPreIndex == 0 || requestPreIndex <= #l && logTerm(l, requestPreIndex) ==  requestPreTerm)) 	
 			-> sendAppendEntriesReply(term, true, abs(requestPreIndex) + #requestEntires, requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, id) . Node(l = slice(l, 0, abs(requestPreIndex)) ++ requestEntires, state = follower)
-			<> sendAppendEntriesReply(term, false, 0, requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, id)).Node()
+			<> sendAppendEntriesReply(term, false, 0, requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, id)).Node())
 
-	+ sum replyTerm: Nat, success: Bool, replyMatchIndex: Nat, requestTerm: Nat, requestPreIndex: Int, requestPreTerm: Nat, requestEntires: List(Nat), requestCommitIndex: Int, from: Nat, to: Nat . 
+	+ (state != crash) -> (sum replyTerm: Nat, success: Bool, replyMatchIndex: Nat, requestTerm: Nat, requestPreIndex: Int, requestPreTerm: Nat, requestEntires: List(Nat), requestCommitIndex: Int, from: Nat, to: Nat . 
 		handleAppendEntriesReply(replyTerm, success, replyMatchIndex, requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, to) 
 		. (term < replyTerm) ->  stepDown . Node(term = replyTerm, state = follower, votedFor = 0) 
 							 <> ((state == leader && term == replyTerm)  -> ((success == true) -> test . Node(matchIndex = replace(matchIndex, to, max(matchIndex . to, replyMatchIndex)), nextIndex = replace(nextIndex, to, replyMatchIndex + 1))
-																							<>  test . Node(nextIndex = replace(nextIndex, to, max(1, nextIndex . to - 1))))) %ToDo, I need to test this.
+																							<>  test . Node(nextIndex = replace(nextIndex, to, max(1, nextIndex . to - 1)))))) %ToDo, I need to test this.
 	
 	);      
 
@@ -159,7 +168,7 @@ proc
 %Should I put step down in the allow node
 init
   allow(
-    { stop, timeout, becomeLeader, requestVoteSent, replyVoteSent, AddVoteToItself, stepDown, wlog, test, appendEntriesRequestSent, appendEntriesRequestReplied, sendAppendEntriesRequest, testHandle, sendAppendEntriesReply},
+    { stop, timeout, becomeLeader, requestVoteSent, replyVoteSent, AddVoteToItself, stepDown, wlog, test, appendEntriesRequestSent, appendEntriesRequestReplied, sendAppendEntriesRequest, testHandle, sendAppendEntriesReply, resume},
     comm(
       	{sendClientRequest|receiveClientRequest -> wlog,
 		requestVote|handleRequestVoteRequest -> requestVoteSent,
@@ -169,5 +178,5 @@ init
 	% I chose term to start with 1, but it can also start with 0 
 	% Remeber to change N - N is the number of node
 	% To do make the function to initiliaze the index haha  
-      Client(4) || Node(0, follower, [], [], 1, 0, initList(N, 1, 0), initList(N, 0, 0), 0) || Node(1, follower, [], [], 1, 0, initList(N, 1, 0), initList(N, 0, 0), 0)
+      Client(3) || Node(0, follower, [], [], 1, 0, initList(N, 1, 0), initList(N, 0, 0), 0) || Node(1, follower, [], [], 1, 0, initList(N, 1, 0), initList(N, 0, 0), 0) || Node(2, follower, [], [], 1, 0, initList(N, 1, 0), initList(N, 0, 0), 0)
   ) ) ;
