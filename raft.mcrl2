@@ -7,48 +7,58 @@
 % Server states
 sort State = struct follower | leader | candidate | crash;
 
-%TODO, Check if mType is neeeded or not  
-sort mType = struct RequestVoteRequest;
+% Global variable 
+% N is the number of servers iin the cluster 
+% BATCH_SIZE is how many entries sent when request to append entries. We assume that BATCH_SIZE is 1 in out paper.  
+map	N, BATCH_SIZE, LIMIT_TERM: Nat;
 
-% Global variable for number of nodes  
-map  N, BATCH_SIZE: Nat;
-eqn  N = 3;
-	BATCH_SIZE = 1; 
+% Intialize the Global Variable
+eqn N = 3;
+	BATCH_SIZE = 1;
+	LIMIT_TERM = 3;   
 
-% Define the push funtion for list 
-map push:  Nat # List(Nat) -> List(Nat);
-
-%Variable that maps the the id of Node to boolean. 
-%If it maps to true then that node is already voted for the node that contains the voterlog
-sort voterLog = List(Nat);    
-
+% log term function 
+% Input: one list of log of type Nat and position of that index you want to find the log term
+% Return the term of the index in a log
 map logTerm: List(Nat) # Int -> Nat;
-
 var  l: List(Nat);
      x: Int;
-
 eqn	(x < 1) -> logTerm(l, x) = 0;
 	(x > #l) -> logTerm(l, x) = 0;
 	(x >= 1 && x <= #l) -> logTerm(l,x) = l . abs(x-1);   
 
-map initList: Nat # Nat # Nat -> List(Nat);   
-
+% Initalize list 
+% input: 
+% param 1: Size of the list 
+% param 2: Number v
+% return the list with of size element which is v. 
+map initList: Nat # Nat -> List(Nat);   
+	initListHelper: Nat # Nat # Nat -> List(Nat);   
 var size, v, c: Nat; 
+eqn initList(size, v) = initListHelper(size, v, 0);
+	(c >= size) -> initListHelper(size, v, c) = []; 
+	(c < size) -> initListHelper(size, v, c) = v |> initListHelper(size, v, c+1);
 
-eqn (c >= size) -> initList(size, v, c) = []; 
-	(c < size) -> initList(size, v, c) = v |> initList(size, v, c+1);
-
+%slice list 
+% Input: 
+% param 1: list 
+% param 2: x  
+% param 3: y 
+% return l[x:y] like python 
 map slice: List(Nat) # Int # Int -> List(Nat);  
 	growSlice: List(Nat) # List(Nat) # Int # Int # Int -> List(Nat); 
-
 var a, b: List(Nat);
 	x, y, n: Int; 	
- 
 eqn slice(a, x, y) = growSlice([], a, x, y, 0);
 	n < x -> growSlice(b, a, x, y, n) = growSlice(b, a, x, y, n + 1);
 	n >= y -> growSlice(b, a, x, y, n) = b;
 	(n >= x && n < y) -> growSlice(b, a, x, y, n) = growSlice(b <| a.abs(n), a, x, y, n + 1);
 
+%Rep;ace an element from a list 
+% Input: List 
+% param 1: i element at position i that needed to be replaced. 
+% param 2: Replaced value
+% Output: List with element at position i replaced by x
 map replace: List(Nat) # Nat # Nat -> List(Nat);  
 
 var a: List(Nat);
@@ -58,6 +68,9 @@ var a: List(Nat);
 eqn (a . i != x) -> replace(a, i, x) = slice(a, 0, i) ++ [x] ++ slice(a, i+1, #a);
 	(a . i == x) -> replace(a, i, x) = a;
 
+% Implement insertion sort (increasing order)
+% Input: List 
+% Output: Sorted lis tin assending order 
 map sortAssendingOrder: List(Nat) -> List(Nat);
 	sortAssendingOrderHelper: List(Nat) # List(Nat) -> List(Nat);
 	insert: List(Nat) # Nat -> List(Nat); 
@@ -77,14 +90,14 @@ eqn	sortAssendingOrder(l) = sortAssendingOrderHelper(l, []);
 
 act
   	sendClientRequest, wlog, receiveClientRequest: Nat;
-	stop, timeout, becomeLeader, AddVoteToItself, stepDown, test, testHandle, resume, advanceCommitIndex;  
+	stop, timeout, becomeLeader, AddVoteToItself, stepDown, test, resume, advanceCommitIndex;  
 	% param1: type of vote request 
 	% param2: current term
 	% param3: last log term 
 	% param4: last log index
 	% param5: source or destination 
 	% param6: source or destination
-	requestVote, handleRequestVoteRequest, requestVoteSent: mType # Nat # Nat # Nat # Nat # Nat;
+	requestVote, handleRequestVoteRequest, requestVoteSent: Nat # Nat # Nat # Nat # Nat;
 	sendReply, handleRequestVoteReply, replyVoteSent: Nat # Bool # Nat # Nat; 
 %(term, prevIndex, prevTerm, entries, commitIndex, from, to)
 	%param 1: current term of the source 
@@ -109,46 +122,55 @@ act
 
 
 proc
-	% Client uses list to sendClientRequest messages to a leader node.    
+	% Client process 
+	% First initalize with a integer n greater than 4. The client process will send n requests and the server will put n of those into their logs. 
 	Client(num: Nat) = (num >= 1) -> sendClientRequest(num) .  Client(num = abs(num-1));
 	
-	% Node process 
-	% id is the id of a node
-	% state: state of the node define by sorted State. There are three states of a node: leader, follower, and candidate  
+	% Node process: 
+	% param: id of the node - id starts from 0.
+	% state: state of the node define by sorted State. There are three states of a node: leader, follower, candidate and crashed defined in struct State. 
 	% l: List is that contains the log of the node. (Temrn and index)
-	% term of Node  
-	% Votedfor if it does not vote for anyone, it is 0, otherwise the index of the voted node
- 	Node(id: Nat, state: State, l: List(Nat), voterLog: voterLog, term: Nat, votedFor: Nat, nextIndex: List(Nat), matchIndex: List(Nat), commitIndex: Nat) = 
-	(term < 5) -> (
+	% voterlLog: List of Natural number 
+	% term: current term of the node  of Node  
+	% Votedfor if it does not vote for anyone, it is 0, otherwise the index of the voted node   
+	% nextIndex: map from server id to the next index of that server 
+	% matchIndex: map from server id to the match index of that server
+	% commitIndex: map from server id to the commited index of that server
+ 	Node(id: Nat, state: State, l: List(Nat), voterLog: List(Nat), term: Nat, votedFor: Nat, nextIndex: List(Nat), matchIndex: List(Nat), commitIndex: Nat) = 
+	% Limit the number of term a server can have. 
+	(term < LIMIT_TERM) -> (
 		% If node is a leader, then the client can sendClientRequest message to that node and update the matchIndex of that node
 		((state == leader) -> (sum v:Nat . receiveClientRequest(v). Node(l = l ++ [term], matchIndex = replace(matchIndex, id, #l+1))))
 		
-		% The node can stop anytime, if it stops then, it can startup as the follower with log and term unchanged
+		% A node can stop anytime. The node state change to crash. 
 		+ (state != crash) -> stop . Node(state = crash)
 
+		% If a node is crashed, then it can resume.  
 		+ (state == crash) -> resume . Node(state = follower)
-		% if it time out, then it changes to the candidate state and term + 1 (Timeout here means that we start the the new election )
-		+ (state == follower || state == candidate) -> timeout . Node(state = candidate, term = term+1, votedFor = id, voterLog = [id], matchIndex = initList(N, 0, 0), nextIndex = initList(N, 1, 0))
-		%TODO,: I forget about the term for now 
+
+		% if it time out, then it changes to the candidate state and term + 1 (Timeout here means that we start the the new election)
+		+ (state == follower || state == candidate) 
+			-> timeout . Node(state = candidate, term = term+1, votedFor = id, voterLog = [id], matchIndex = initList(N, 0), nextIndex = initList(N, 1))
 		
 		% If it is a candiate then it sends the request vote request. 
-		% For now, I assume that the vote request is always true, and the term and log is 1  
-		% TODO deltet the requestVoterRequest
 		+ (state == candidate) -> (    
-			sum d: Nat . (!(d in voterLog)) -> requestVote(RequestVoteRequest, term, logTerm(l, #l), #l, id, d). Node()
+			sum d: Nat . (!(d in voterLog)) -> requestVote(term, logTerm(l, #l), #l, id, d). Node()
 			+ 	
 			% If d is not in the voterlog, add d in the voter log 
-			sum d: Nat . (!(d in voterLog)) -> (handleRequestVoteReply(term, true, id, d). Node(voterLog = voterLog <| d) 
+			sum d: Nat . (!(d in voterLog)) -> 
+				(
+				handleRequestVoteReply(term, true, id, d). Node(voterLog = voterLog <| d) 
 				+ 
-				handleRequestVoteReply(term, false, id, d). Node())
+				handleRequestVoteReply(term, false, id, d). Node()
+				)
 			+ 
-			% Why do I need to limit the voter log I need to clean the vote in some way  
-			((#voterLog*2 > N)) -> becomeLeader . Node(state = leader, nextIndex = initList(N, #l+1, 0))) 
+			% If it receives the majority of the vode then the node can become a leader 
+			((#voterLog*2 > N)) -> becomeLeader . Node(state = leader, nextIndex = initList(N, #l+1))) 
 
-	% Any node can handle the Vote Reqeust. 1 %Todo delete candidate for the vote request becaues all node can handle this
+	% Any node can handle the Vote Reqeust. 1 %TODO delete candidate for the vote request becaues all node can handle this
 	+ (state != candidate && state != crash) -> (
 		% For the reply, it does not change the state of the node? 
-		sum d, lastlogterm, requestTerm: Nat . sum lastlogindex: Nat . handleRequestVoteRequest(RequestVoteRequest, requestTerm, lastlogterm, lastlogindex,d,id) .
+		sum d, lastlogterm, requestTerm: Nat . sum lastlogindex: Nat . handleRequestVoteRequest(requestTerm, lastlogterm, lastlogindex,d,id) .
 		(term < requestTerm) -> stepDown . Node(term = requestTerm, state = follower, votedFor = 0) 
 							<> 
 							(term == requestTerm && 
@@ -157,7 +179,7 @@ proc
 									-> sendReply(term, true,d ,id).Node(votedFor = d) 
 									<> sendReply(term, false, d, id) . Node())  
 		
-	+ sum peer: Nat . (peer != id && peer < N && state == leader && nextIndex . peer <= #l) -> (test . (matchIndex . peer +1 < nextIndex . peer) 
+	+ sum peer: Nat . (peer != id && peer < N && state == leader && nextIndex . peer <= #l) -> ((matchIndex . peer +1 < nextIndex . peer) 
 		-> 
 		sendAppendEntriesRequest(term, nextIndex . peer - 1, logTerm(l,  (nextIndex . peer) - 1), slice(l, nextIndex . peer - 1, nextIndex . peer - 1), min(commitIndex, nextIndex . peer - 1), id, peer)
 		<> 
@@ -165,7 +187,7 @@ proc
 		) . Node()
 
 	+ (state != crash) -> (sum requestTerm: Nat, requestPreIndex: Int, requestPreTerm: Nat, requestEntires: List(Nat), requestCommitIndex: Int, from: Nat. 
-		handleAppendEntriesRequest(requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, id) . testHandle
+		handleAppendEntriesRequest(requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, id)
 		. 
 		(term < requestTerm) -> (stepDown . Node(term = requestTerm, state = follower, votedFor = 0)) 
 		<> 
@@ -177,26 +199,22 @@ proc
 		handleAppendEntriesReply(replyTerm, success, replyMatchIndex, requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, to) 
 		. (term < replyTerm) ->  stepDown . Node(term = replyTerm, state = follower, votedFor = 0) 
 							 <> ((state == leader && term == replyTerm)  -> ((success == true) -> test . Node(matchIndex = replace(matchIndex, to, max(matchIndex . to, replyMatchIndex)), nextIndex = replace(nextIndex, to, replyMatchIndex + 1))
-																							<>  test . Node(nextIndex = replace(nextIndex, to, max(1, nextIndex . to - 1)))))) %ToDo, I need to test this.
+																							<>  test . Node(nextIndex = replace(nextIndex, to, max(1, nextIndex . to - 1)))))) 
 	
-	% When the state is leader and the logterm %TODO is equal to its term, then advanceCommitIndex. We use floor to change from Real to Int and abs to change from Int to Nat. 
+	% WHen the sate is leader and the logterm is up to date , then the node can advanceCommitIndex. We find the commit index by sorting the array and taking the median of that. (We use floor to change from Real to Int and abs to change from Int to Nat.) 
 	+ (state == leader && logTerm(l, #l) == term) -> advanceCommitIndex . Node(commitIndex = sortAssendingOrder(matchIndex) . abs(floor(N/2)))
 
 	);      
 
 
-%Should I put step down in the allow node
 init
   allow(
-    { stop, timeout, becomeLeader, requestVoteSent, replyVoteSent, AddVoteToItself, stepDown, wlog, test, appendEntriesRequestSent, appendEntriesRequestReplied, sendAppendEntriesRequest, testHandle, sendAppendEntriesReply, resume,advanceCommitIndex},
+    { stop, timeout, becomeLeader, requestVoteSent, replyVoteSent, AddVoteToItself, stepDown, wlog, test, appendEntriesRequestSent, appendEntriesRequestReplied, resume,advanceCommitIndex},
     comm(
       	{sendClientRequest|receiveClientRequest -> wlog,
 		requestVote|handleRequestVoteRequest -> requestVoteSent,
 		sendReply|handleRequestVoteReply -> replyVoteSent,
 		sendAppendEntriesRequest | handleAppendEntriesRequest -> appendEntriesRequestSent,
 		sendAppendEntriesReply | handleAppendEntriesReply -> appendEntriesRequestReplied}, 
-	% I chose term to start with 1, but it can also start with 0 
-	% Remeber to change N - N is the number of node
-	% To do make the function to initiliaze the index haha  
-      Client(3) || Node(0, follower, [], [], 1, 0, initList(N, 1, 0), initList(N, 0, 0), 0) || Node(1, follower, [], [], 1, 0, initList(N, 1, 0), initList(N, 0, 0), 0) || Node(2, follower, [], [], 1, 0, initList(N, 1, 0), initList(N, 0, 0), 0)
+      Client(3) || Node(0, follower, [], [], 1, 0, initList(N, 1), initList(N, 0), 0) || Node(1, follower, [], [], 1, 0, initList(N, 1), initList(N, 0), 0) || Node(2, follower, [], [], 1, 0, initList(N, 1), initList(N, 0), 0)
   ) ) ;
