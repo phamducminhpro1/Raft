@@ -10,22 +10,23 @@ sort State = struct follower | leader | candidate | crash;
 % Global variable 
 % N is the number of servers iin the cluster 
 % BATCH_SIZE is how many entries sent when request to append entries. We assume that BATCH_SIZE is 1 in out paper.  
-map	N, BATCH_SIZE, LIMIT_TERM: Nat;
+map	N, BATCH_SIZE, LIMIT_TERM, NUM_CILENT_REQUEST: Nat;
 
 % Intialize the Global Variable
-eqn N = 3;
+eqn N = 2;
 	BATCH_SIZE = 1;
-	LIMIT_TERM = 3;   
+	LIMIT_TERM = 3;    
+	NUM_CILENT_REQUEST = 3; 
 
 % log term function 
-% Input: one list of log of type Nat and position of that index you want to find the log term
+% Input: one list of log of type Nat and position of that index in the log you want to find the log term. 
 % Return the term of the index in a log
 map logTerm: List(Nat) # Int -> Nat;
 var  l: List(Nat);
      x: Int;
 eqn	(x < 1) -> logTerm(l, x) = 0;
 	(x > #l) -> logTerm(l, x) = 0;
-	(x >= 1 && x <= #l) -> logTerm(l,x) = l . abs(x-1);   
+	(x >= 1 && x <= #l) -> logTerm(l,x) = l . abs(x-1);  %(In mcrl2 starts at 1 so we need to do abs(x-1)) 
 
 % Initalize list 
 % input: 
@@ -216,5 +217,5 @@ init
 		sendReply|handleRequestVoteReply -> replyVoteSent,
 		sendAppendEntriesRequest | handleAppendEntriesRequest -> appendEntriesRequestSent,
 		sendAppendEntriesReply | handleAppendEntriesReply -> appendEntriesRequestReplied}, 
-      Client(3) || Node(0, follower, [], [], 1, 0, initList(N, 1), initList(N, 0), 0) || Node(1, follower, [], [], 1, 0, initList(N, 1), initList(N, 0), 0) || Node(2, follower, [], [], 1, 0, initList(N, 1), initList(N, 0), 0)
+      Client(NUM_CILENT_REQUEST) || Node(0, follower, [], [], 1, 0, initList(N, 1), initList(N, 0), 0) || Node(1, follower, [], [], 1, 0, initList(N, 1), initList(N, 0), 0) 
   ) ) ;
