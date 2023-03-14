@@ -163,7 +163,7 @@ proc
 			% If d is not in the voterlog, add d in the voter log. Also, if d is not in the voterlog, we will not add it to the log, because d is already voted -> no need to handle anymore 
 			sum d: Nat . (!(d in voterLog)) -> 
 				(    
-				% TODO check the voterlog part how they implement it. 
+				% TODO check the voterlog part how they implement it. Need to discuss about this
 				handleRequestVoteReply(term, true, id, d). Node(voterLog = voterLog <| d) 
 				+ 
 				handleRequestVoteReply(term, false, id, d). Node()
@@ -172,24 +172,32 @@ proc
 			% If it receives the majority of the vode then the node can become a leader 
 			((#voterLog*2 > N)) -> becomeLeader . Node(state = leader, nextIndex = initList(N, #l+1))) 
 
-	% Any node can handle the Vote Reqeust. 1 %TODO delete candidate for the vote request becaues all node can handle this
+	% Any nodes can handle the Vote Request. 
 	+ (state != candidate && state != crash) -> (
 		% For the reply, it does not change the state of the node? 
-		sum d, lastlogterm, requestTerm: Nat . sum lastlogindex: Nat . handleRequestVoteRequest(requestTerm, lastlogterm, lastlogindex,d,id) .
+		sum d, lastlogterm, requestTerm: Nat . sum lastlogindex: Nat . handleRequestVoteRequest(requestTerm, lastlogterm, lastlogindex,d,id) .    
+		% If term of the request is bigger than the current term, this means that the current node is not up-to-date, therefore it has to update its term by steping down 
 		(term < requestTerm) -> stepDown . Node(term = requestTerm, state = follower, votedFor = 0) 
+							% Otherwise this means that 
+							% 1. the term of the request is equal       
+							% 2. The term of the request is smaller  
+							% We only sendRequestVoteReply when the term of the request is equal.  
 							<> 
 							(term == requestTerm && 
-							(votedFor == 0 || votedFor == requestTerm) 
+							(votedFor == 0 || votedFor == requestTerm)   
+								% We check the last log term and the last log intex 
 								&& (lastlogterm > logTerm(l, #l) || (lastlogterm == logTerm(l, #l) && lastlogindex >= #l))) 
 									-> sendRequestVoteReply(term, true,d ,id) . Node(votedFor = d) 
 									<> sendRequestVoteReply(term, false, d, id) . Node())  
-		
-	+ sum peer: Nat . (peer != id && peer < N && state == leader && nextIndex . peer <= #l) -> ((matchIndex . peer +1 < nextIndex . peer) 
-		-> 
-		sendAppendEntriesRequest(term, nextIndex . peer - 1, logTerm(l,  (nextIndex . peer) - 1), slice(l, nextIndex . peer - 1, nextIndex . peer - 1), min(commitIndex, nextIndex . peer - 1), id, peer)
-		<> 
-		sendAppendEntriesRequest(term, nextIndex . peer - 1, logTerm(l,  (nextIndex . peer) - 1), slice(l, nextIndex . peer - 1, min((nextIndex . peer) - 1 + BATCH_SIZE, #l)), min(commitIndex, (nextIndex . peer) - 1 + BATCH_SIZE), id, peer)
-		) . Node()
+	
+	% A node can only send the append entries request to other node if it is a leader and nextIndex of its peer is smaller or equal to itself  
+	+ sum peer: Nat . (peer != id && peer < N && state == leader && nextIndex . peer <= #l) -> ( 
+		(matchIndex . peer + 1 < nextIndex . peer) 
+			-> 
+			sendAppendEntriesRequest(term, nextIndex . peer - 1, logTerm(l,  (nextIndex . peer) - 1), slice(l, nextIndex . peer - 1, nextIndex . peer - 1), min(commitIndex, nextIndex . peer - 1), id, peer)
+			<> 
+			sendAppendEntriesRequest(term, nextIndex . peer - 1, logTerm(l,  (nextIndex . peer) - 1), slice(l, nextIndex . peer - 1, min((nextIndex . peer) - 1 + BATCH_SIZE, #l)), min(commitIndex, (nextIndex . peer) - 1 + BATCH_SIZE), id, peer)
+			) . Node()
 
 	+ (state != crash) -> (sum requestTerm: Nat, requestPreIndex: Int, requestPreTerm: Nat, requestEntires: List(Nat), requestCommitIndex: Int, from: Nat. 
 		handleAppendEntriesRequest(requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, id)
