@@ -99,7 +99,7 @@ act
 	% param5: source or destination 
 	% param6: source or destination
 	requestVote, handleRequestVoteRequest, requestVoteSent: Nat # Nat # Nat # Nat # Nat;
-	sendReply, handleRequestVoteReply, replyVoteSent: Nat # Bool # Nat # Nat; 
+	sendRequestVoteReply, handleRequestVoteReply, replyVoteSent: Nat # Bool # Nat # Nat; 
 %(term, prevIndex, prevTerm, entries, commitIndex, from, to)
 	%param 1: current term of the source 
 	%param 2: prevIndex 
@@ -155,11 +155,15 @@ proc
 		
 		% If it is a candiate then it sends the request vote request. 
 		+ (state == candidate) -> (    
+			% If other node d already vote for the current candidate, then we do not send the request vote anymore. 
+			% This is different from the TLA+. We chose to do this to minimize the number actions without losing the generalzation. Because if already received a vote from d, then sending d again will not change anything
+			% TODO: I am not sure this is actually true without losing the generalization. If there is still a leader and the leader append entries to that node d and the terms of d will be higher then the candidate in the mean tiem./ 
 			sum d: Nat . (!(d in voterLog)) -> requestVote(term, logTerm(l, #l), #l, id, d). Node()
 			+ 	
-			% If d is not in the voterlog, add d in the voter log 
+			% If d is not in the voterlog, add d in the voter log. Also, if d is not in the voterlog, we will not add it to the log, because d is already voted -> no need to handle anymore 
 			sum d: Nat . (!(d in voterLog)) -> 
-				(
+				(    
+				% TODO check the voterlog part how they implement it. 
 				handleRequestVoteReply(term, true, id, d). Node(voterLog = voterLog <| d) 
 				+ 
 				handleRequestVoteReply(term, false, id, d). Node()
@@ -176,9 +180,9 @@ proc
 							<> 
 							(term == requestTerm && 
 							(votedFor == 0 || votedFor == requestTerm) 
-								&& (lastlogterm > logTerm(l, #l) || (lastlogterm == logTerm(l, #l) && lastlogindex >= #l))) %TOODO change this to log term 
-									-> sendReply(term, true,d ,id).Node(votedFor = d) 
-									<> sendReply(term, false, d, id) . Node())  
+								&& (lastlogterm > logTerm(l, #l) || (lastlogterm == logTerm(l, #l) && lastlogindex >= #l))) 
+									-> sendRequestVoteReply(term, true,d ,id) . Node(votedFor = d) 
+									<> sendRequestVoteReply(term, false, d, id) . Node())  
 		
 	+ sum peer: Nat . (peer != id && peer < N && state == leader && nextIndex . peer <= #l) -> ((matchIndex . peer +1 < nextIndex . peer) 
 		-> 
@@ -210,11 +214,11 @@ proc
 
 init
   allow(
-    { stop, timeout, becomeLeader, requestVoteSent, replyVoteSent, AddVoteToItself, stepDown, wlog, test, appendEntriesRequestSent, appendEntriesRequestReplied, resume,advanceCommitIndex},
+    { stop, timeout, becomeLeader, requestVoteSent, replyVoteSent, AddVoteToItself, stepDown, wlog, test, appendEntriesRequestSent, appendEntriesRequestReplied, resume, advanceCommitIndex},
     comm(
       	{sendClientRequest|receiveClientRequest -> wlog,
 		requestVote|handleRequestVoteRequest -> requestVoteSent,
-		sendReply|handleRequestVoteReply -> replyVoteSent,
+		sendRequestVoteReply|handleRequestVoteReply -> replyVoteSent,
 		sendAppendEntriesRequest | handleAppendEntriesRequest -> appendEntriesRequestSent,
 		sendAppendEntriesReply | handleAppendEntriesReply -> appendEntriesRequestReplied}, 
       Client(NUM_CILENT_REQUEST) || Node(0, follower, [], [], 1, 0, initList(N, 1), initList(N, 0), 0) || Node(1, follower, [], [], 1, 0, initList(N, 1), initList(N, 0), 0) 
