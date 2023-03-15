@@ -91,7 +91,7 @@ eqn	sortAssendingOrder(l) = sortAssendingOrderHelper(l, []);
 
 act
   	sendClientRequest, wlog, receiveClientRequest: Nat;
-	stop, timeout, becomeLeader, AddVoteToItself, stepDown, test, resume, advanceCommitIndex;  
+	stop, timeout, becomeLeader, AddVoteToItself, stepDown, test, resume, advanceCommitIndex, dropStaleResponse;  
 	% param1: type of vote request 
 	% param2: current term
 	% param3: last log term 
@@ -176,19 +176,22 @@ proc
 	+ (state != candidate && state != crash) -> (
 		% For the reply, it does not change the state of the node? 
 		sum d, lastlogterm, requestTerm: Nat . sum lastlogindex: Nat . handleRequestVoteRequest(requestTerm, lastlogterm, lastlogindex,d,id) .    
-		% If term of the request is bigger than the current term, this means that the current node is not up-to-date, therefore it has to update its term by steping down 
+		%drop stale message
+		(term > requestTerm) -> dropStaleResponse . Node()
+		<>
+		% If term of the request is bigger than the current term, this means that the current node is not up-to-date, therefore it has to update its term by steping down  
 		(term < requestTerm) -> stepDown . Node(term = requestTerm, state = follower, votedFor = 0) 
-							% Otherwise this means that 
-							% 1. the term of the request is equal       
-							% 2. The term of the request is smaller  
-							% We only sendRequestVoteReply when the term of the request is equal.  
-							<> 
-							(term == requestTerm && 
-							(votedFor == 0 || votedFor == requestTerm)   
-								% We check the last log term and the last log intex 
-								&& (lastlogterm > logTerm(l, #l) || (lastlogterm == logTerm(l, #l) && lastlogindex >= #l))) 
-									-> sendRequestVoteReply(term, true,d ,id) . Node(votedFor = d) 
-									<> sendRequestVoteReply(term, false, d, id) . Node())  
+		% Otherwise this means that 
+		% 1. the term of the request is equal       
+		% 2. The term of the request is smaller  
+		% We only sendRequestVoteReply when the term of the request is equal.  
+		<> 
+		(term == requestTerm && 
+		(votedFor == 0 || votedFor == requestTerm)   
+			% We check the last log term and the last log intex 
+			&& (lastlogterm > logTerm(l, #l) || (lastlogterm == logTerm(l, #l) && lastlogindex >= #l))) 
+				-> sendRequestVoteReply(term, true,d ,id) . Node(votedFor = d) 
+				<> sendRequestVoteReply(term, false, d, id) . Node())  
 	
 	% A node can only send the append entries request to other node if it is a leader and nextIndex of its peer is smaller or equal to itself  
 	+ sum peer: Nat . (peer != id && peer < N && state == leader && nextIndex . peer <= #l) -> ( 
@@ -202,6 +205,8 @@ proc
 	+ (state != crash) -> (sum requestTerm: Nat, requestPreIndex: Int, requestPreTerm: Nat, requestEntires: List(Nat), requestCommitIndex: Int, from: Nat. 
 		handleAppendEntriesRequest(requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, id)
 		. 
+		(term > requestTerm) -> dropStaleResponse . Node()
+		<>
 		(term < requestTerm) -> (stepDown . Node(term = requestTerm, state = follower, votedFor = 0)) 
 		<> 
 		((term == requestTerm && (requestPreIndex == 0 || requestPreIndex <= #l && logTerm(l, requestPreIndex) ==  requestPreTerm)) 	
@@ -222,7 +227,7 @@ proc
 
 init
   allow(
-    { stop, timeout, becomeLeader, requestVoteSent, replyVoteSent, AddVoteToItself, stepDown, wlog, test, appendEntriesRequestSent, appendEntriesRequestReplied, resume, advanceCommitIndex},
+    { stop, timeout, becomeLeader, requestVoteSent, replyVoteSent, AddVoteToItself, stepDown, wlog, test, appendEntriesRequestSent, appendEntriesRequestReplied, resume, advanceCommitIndex, dropStaleResponse},
     comm(
       	{sendClientRequest|receiveClientRequest -> wlog,
 		requestVote|handleRequestVoteRequest -> requestVoteSent,
