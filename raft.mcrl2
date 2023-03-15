@@ -151,7 +151,7 @@ proc
 
 		% if it time out, then it changes to the candidate state and term + 1 (Timeout here means that we start the the new election)
 		+ (state == follower || state == candidate) 
-			-> timeout . Node(state = candidate, term = term+1, votedFor = id, voterLog = [id], matchIndex = initList(N, 0), nextIndex = initList(N, 1))
+			-> timeout . Node(state = candidate, term = term+1, votedFor = id, voterLog = [id])
 		
 		% If it is a candiate then it sends the request vote request. 
 		+ (state == candidate) -> (    
@@ -170,7 +170,7 @@ proc
 				)
 			+ 
 			% If it receives the majority of the vode then the node can become a leader 
-			((#voterLog*2 > N)) -> becomeLeader . Node(state = leader, nextIndex = initList(N, #l+1))) 
+			((#voterLog*2 > N)) -> becomeLeader . Node(state = leader, nextIndex = initList(N, #l+1), matchIndex = initList(N, 0), nextIndex = initList(N, 1))) 
 
 	% Any nodes can handle the Vote Request. 
 	+ (state != candidate && state != crash) -> (
