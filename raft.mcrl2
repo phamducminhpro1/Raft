@@ -208,27 +208,42 @@ eqn CreateRequestVoteMsg(sender, termNode, lengthLog, lastTermLog, receiver) = M
 map hasVoteTermGreater,ConflictWithLeader,NoConflictWithLeader : NetworkPayload # LogType -> Bool;
     LogOK : NetworkPayload # LogType -> Bool;
     hasVoteTermEqual : NetworkPayload # LogType # Int -> Bool;
-    RequestSuccessful : NetworkPayload # LogType # List(Nat) # Nat # Nat -> Bool;
+    isAdvanceCommitIndexOk : NetworkPayload # LogType # List(Nat) # Nat # Nat -> Bool;
     SliceLengthSmaller,SliceLengthEqual : LogType # NetworkPayload -> Bool;
 var msg: NetworkPayload;
     log: LogType;
     votedFor: Int;
     commitIndex,currentTerm,index: Nat;
     matchIndex: List(Nat);
-eqn
+eqn  
+    % Condition to call this the currentTerm is greater than term in the message from the candidate term 
+    % Check whether the current node should vote for the candidates which sent the msg 
     % Parameter 
     % msg: Message from the network 
     % log: Current log of the node
     % Return bool wheather to vote for the node that sent the request   
     hasVoteTermGreater(msg,log) = ((endLogTerm(rpc(msg)) > lastTerm(log)) 
                                 || ((endLogTerm(rpc(msg)) == lastTerm(log) ) && (endLogIndex(rpc(msg)) >= #log)));
-    
-    LogOK(msg,log) = ((prevLogIndexMsg == 0) 
-                                || ((prevLogIndexMsg > 0) && (prevLogIndexMsg <= # log) && (prevLogTerm(rpc(msg)) == (getTerm(log, prevLogIndexMsg))))) whr prevLogIndexMsg = prevLogIndex(rpc(msg)) end;
+
+    % Condition to call this the currentTerm is eual to term in the  message from the candidate term 
+    % Check whether the current node should vote for the candidates which sent the msg 
+    % Parameter 
+    % msg: Message from the network 
+    % log: Current log of the node
+    % Return bool wheather to vote for the node that sent the request                            
     hasVoteTermEqual(msg,log,votedFor) = ((endLogTerm(rpc(msg)) > lastTerm(log)) || ((endLogTerm(rpc(msg)) == lastTerm(log)) && (endLogIndex(rpc(msg)) >= #log))) 
                                         && (votedFor == senderID(msg) || votedFor == -1);
+    
+    % The function is used in checking appendEntries, check if the log of the current node is ok with regards to the msg sent by the leader. 
+    % Parameter 
+    % msg: Message from the network 
+    % log: Current log of the node
+    % Return bool whether is the log is ok  
+    LogOK(msg,log) = ((prevLogIndexMsg == 0) 
+                                || ((prevLogIndexMsg > 0) && (prevLogIndexMsg <= # log) && (prevLogTerm(rpc(msg)) == (getTerm(log, prevLogIndexMsg))))) whr prevLogIndexMsg = prevLogIndex(rpc(msg)) end;
 
-    RequestSuccessful(msg,log,matchIndex,commitIndex,currentTerm) = (((MaxAgreeIndex > 0) 
+    % The function is used to check if the rquest is successful 
+    isAdvanceCommitIndexOk(msg,log,matchIndex,commitIndex,currentTerm) = (((MaxAgreeIndex > 0) 
                                                                     && (getTerm(log, MaxAgreeIndex) == currentTerm) 
                                                                     && (commitIndex != MaxAgreeIndex))) whr MaxAgreeIndex = findMaxAgreeIndex(#log, matchIndex) end;
 
@@ -355,24 +370,24 @@ sum msg: NetworkPayload . (receiverID(msg) == id) -> (
                 (currentTermRPC(rpc(msg)) == currentTerm && isAppendEntriesResponse(rpc(msg))) -> 
                 (
                     % update nextIndex and matchIndex, advance commit index
-                    (success(rpc(msg)) && RequestSuccessful(msg,log,replace(matchIndex, senderID(msg), matchIndexRPC(rpc(msg))),commitIndex,currentTerm)) -> 
+                    (success(rpc(msg)) && isAdvanceCommitIndexOk(msg,log,replace(matchIndex, senderID(msg), matchIndexRPC(rpc(msg))),commitIndex,currentTerm)) -> 
                               receiveFromNetwork(msg) 
                              .advanceCommitIndex(commitIndex, findMaxAgreeIndex(# log, matchIndex), currentTerm, log) 
                              .Node(nextIndex = replace(nextIndex, senderID(msg), matchIndexRPC(rpc(msg))+1), matchIndex = replace(matchIndex, senderID(msg), matchIndexRPC(rpc(msg))), commitIndex = findMaxAgreeIndex(# log, replace(matchIndex, senderID(msg), matchIndexRPC(rpc(msg)))))
                     +
                     % update nextIndex and matchIndex
-                    (success(rpc(msg)) && !RequestSuccessful(msg,log,replace(matchIndex, senderID(msg), matchIndexRPC(rpc(msg))),commitIndex,currentTerm)) -> 
+                    (success(rpc(msg)) && !isAdvanceCommitIndexOk(msg,log,replace(matchIndex, senderID(msg), matchIndexRPC(rpc(msg))),commitIndex,currentTerm)) -> 
                               receiveFromNetwork(msg) 
                              .Node(nextIndex = replace(nextIndex, senderID(msg), matchIndexRPC(rpc(msg))+1), matchIndex = replace(matchIndex, senderID(msg), matchIndexRPC(rpc(msg))))
                     +
                     % update nextIndex, advance commit index
-                    (!success(rpc(msg)) && RequestSuccessful(msg,log,matchIndex,commitIndex,currentTerm)) -> 
+                    (!success(rpc(msg)) && isAdvanceCommitIndexOk(msg,log,matchIndex,commitIndex,currentTerm)) -> 
                                receiveFromNetwork(msg) 
                               .advanceCommitIndex(commitIndex, findMaxAgreeIndex(# log, matchIndex), currentTerm, log) 
                               .Node(nextIndex = replace(nextIndex, senderID(msg), max(1, (nextIndex . senderID(msg)) - 1)), commitIndex = findMaxAgreeIndex(# log, matchIndex)) 
                     +
                     % update nextIndex
-                    (!success(rpc(msg)) && !RequestSuccessful(msg,log,matchIndex,commitIndex,currentTerm)) -> 
+                    (!success(rpc(msg)) && !isAdvanceCommitIndexOk(msg,log,matchIndex,commitIndex,currentTerm)) -> 
                                receiveFromNetwork(msg)
                               .Node(nextIndex = replace(nextIndex, senderID(msg), max(1, (nextIndex . senderID(msg)) - 1)))
                 )
