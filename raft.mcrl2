@@ -430,6 +430,7 @@ votedFor: Int, voterLog: List(Nat), nextIndex: List(Nat), matchIndex: List(Nat),
         (currentState != Leader  && currentTerm < MaxTerm) -> (
             timeout . Node(currentState = Candidate, currentTerm = currentTerm + 1, votedFor = Nat2Int(id), voterLog = [id], replyToBeSent = none)
         )
+		    +
         exposeLog(id, currentTerm, commitIndex, log) . Node()        
     
     );
