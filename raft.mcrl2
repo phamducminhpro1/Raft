@@ -205,9 +205,9 @@ eqn CreateRequestVoteMsg(sender, termNode, lengthLog, lastTermLog, receiver) = M
 %%%%%%%%%%%%% Conditions %%%%%%%%%%%%%%%%%%%%%%%%%%
 
 
-map hasVote,ConflictWithLeader,NoConflictWithLeader : NetworkPayload # LogType -> Bool;
+map hasVoteTermGreater,ConflictWithLeader,NoConflictWithLeader : NetworkPayload # LogType -> Bool;
     LogOK : NetworkPayload # LogType -> Bool;
-    MsgfromCurrentTerm : NetworkPayload # LogType # Int -> Bool;
+    hasVoteTermEqual : NetworkPayload # LogType # Int -> Bool;
     RequestSuccessful : NetworkPayload # LogType # List(Nat) # Nat # Nat -> Bool;
     SliceLengthSmaller,SliceLengthEqual : LogType # NetworkPayload -> Bool;
 var msg: NetworkPayload;
@@ -219,12 +219,13 @@ eqn
     % Parameter 
     % msg: Message from the network 
     % log: Current log of the node
-    % Return wheather to vote for the node that sent the request   
-    hasVote(msg,log) = ((endLogTerm(rpc(msg)) > lastTerm(log)) 
+    % Return bool wheather to vote for the node that sent the request   
+    hasVoteTermGreater(msg,log) = ((endLogTerm(rpc(msg)) > lastTerm(log)) 
                                 || ((endLogTerm(rpc(msg)) == lastTerm(log) ) && (endLogIndex(rpc(msg)) >= #log)));
+    
     LogOK(msg,log) = ((prevLogIndexMsg == 0) 
                                 || ((prevLogIndexMsg > 0) && (prevLogIndexMsg <= # log) && (prevLogTerm(rpc(msg)) == (getTerm(log, prevLogIndexMsg))))) whr prevLogIndexMsg = prevLogIndex(rpc(msg)) end;
-    MsgfromCurrentTerm(msg,log,votedFor) = ((endLogTerm(rpc(msg)) > lastTerm(log)) || ((endLogTerm(rpc(msg)) == lastTerm(log)) && (endLogIndex(rpc(msg)) >= #log))) 
+    hasVoteTermEqual(msg,log,votedFor) = ((endLogTerm(rpc(msg)) > lastTerm(log)) || ((endLogTerm(rpc(msg)) == lastTerm(log)) && (endLogIndex(rpc(msg)) >= #log))) 
                                         && (votedFor == senderID(msg) || votedFor == -1);
 
     RequestSuccessful(msg,log,matchIndex,commitIndex,currentTerm) = (((MaxAgreeIndex > 0) 
@@ -270,25 +271,25 @@ sum msg: NetworkPayload . (receiverID(msg) == id) -> (
             +
             % request vote request message with higher term
             % If the last log term in the request message is greater than that of the current note or it it is equal, we need to compare the length of the log to decide what to send  
-            ((currentTermRPC(rpc(msg)) > currentTerm) && isRequestVoteRequest(rpc(msg)) && hasVote(msg,log)) -> 
+            ((currentTermRPC(rpc(msg)) > currentTerm) && isRequestVoteRequest(rpc(msg)) && hasVoteTermGreater(msg,log)) -> 
                   % voted for is set to nil so we vote automatically
                   receiveFromNetwork(msg)
                  .Node(currentState = Follower, currentTerm = currentTermRPC(rpc(msg)), votedFor = senderID(msg), replyToBeSent = message(Message(id, RequestVoteResponse(currentTermRPC(rpc(msg)), true) , senderID(msg))))
             +
-            ((currentTermRPC(rpc(msg)) > currentTerm) && isRequestVoteRequest(rpc(msg)) && !hasVote(msg,log)) ->
+            ((currentTermRPC(rpc(msg)) > currentTerm) && isRequestVoteRequest(rpc(msg)) && !hasVoteTermGreater(msg,log)) ->
                receiveFromNetwork(msg)
               .Node(currentState = Follower, currentTerm = currentTermRPC(rpc(msg)), votedFor = -1, replyToBeSent = message(Message(id, RequestVoteResponse(currentTermRPC(rpc(msg)), false) , senderID(msg))))
             +
             %msg has same term or is an append entries request with a greater term
             (
                     % If the last log term in the request message is greater than that of the current note or it it is equal, we need to compare the length of the log to decide what to send  
-                    (currentTermRPC(rpc(msg)) == currentTerm && isRequestVoteRequest(rpc(msg)) && MsgfromCurrentTerm(msg,log,votedFor)) -> (
+                    (currentTermRPC(rpc(msg)) == currentTerm && isRequestVoteRequest(rpc(msg)) && hasVoteTermEqual(msg,log,votedFor)) -> (
                         %vote for the sender if log is okay
                         receiveFromNetwork(msg) 
                        .Node(votedFor = senderID(msg), replyToBeSent = message(Message(id, RequestVoteResponse(currentTerm, true) , senderID(msg))))
                     ) 
                     +
-                    (currentTermRPC(rpc(msg)) == currentTerm && isRequestVoteRequest(rpc(msg)) && !MsgfromCurrentTerm(msg,log,votedFor)) -> 
+                    (currentTermRPC(rpc(msg)) == currentTerm && isRequestVoteRequest(rpc(msg)) && !hasVoteTermEqual(msg,log,votedFor)) -> 
                         % don't vote if log is not okay or we've voted for someone else
                         receiveFromNetwork(msg)
                        .Node(replyToBeSent = message(Message(id, RequestVoteResponse(currentTerm, false) , senderID(msg))))
@@ -359,8 +360,8 @@ sum msg: NetworkPayload . (receiverID(msg) == id) -> (
                              .advanceCommitIndex(commitIndex, findMaxAgreeIndex(# log, matchIndex), currentTerm, log) 
                              .Node(nextIndex = replace(nextIndex, senderID(msg), matchIndexRPC(rpc(msg))+1), matchIndex = replace(matchIndex, senderID(msg), matchIndexRPC(rpc(msg))), commitIndex = findMaxAgreeIndex(# log, replace(matchIndex, senderID(msg), matchIndexRPC(rpc(msg)))))
                     +
-                    (success(rpc(msg)) && !RequestSuccessful(msg,log,replace(matchIndex, senderID(msg), matchIndexRPC(rpc(msg))),commitIndex,currentTerm)) -> 
                     % update nextIndex and matchIndex
+                    (success(rpc(msg)) && !RequestSuccessful(msg,log,replace(matchIndex, senderID(msg), matchIndexRPC(rpc(msg))),commitIndex,currentTerm)) -> 
                               receiveFromNetwork(msg) 
                              .Node(nextIndex = replace(nextIndex, senderID(msg), matchIndexRPC(rpc(msg))+1), matchIndex = replace(matchIndex, senderID(msg), matchIndexRPC(rpc(msg))))
                     +
@@ -414,15 +415,6 @@ votedFor: Int, voterLog: List(Nat), nextIndex: List(Nat), matchIndex: List(Nat),
         (currentState != Leader  && currentTerm < MaxTerm) -> (
             timeout . Node(currentState = Candidate, currentTerm = currentTerm + 1, votedFor = Nat2Int(id), voterLog = [id], replyToBeSent = none)
         )
-        % +
-        % % expose the leader (for property verification)
-        % (currentState == Leader) -> (
-        %     exposeLeader(id, currentTerm) . Node()
-        %     % +
-        %     %exposeLogLeader(currentTerm, log) . Node()
-        % )
-        +
-        % expose the log (for property verification)
         exposeLog(id, currentTerm, commitIndex, log) . Node()        
     
     );
