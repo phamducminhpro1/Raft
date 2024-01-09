@@ -1,238 +1,466 @@
-%  This is the formal specification for the Raft consensus algorithm.
-%
-%  Copyright 2023 Pham Duc Minh 
-%  TODO add license 
-%
+%%%%%%% Constants %%%%%%
 
-% Server states
-sort State = struct follower | leader | candidate | crash;
+% no. of servers
+map NumberOfServers: Nat;
+eqn NumberOfServers = 3;
 
-% Global variable 
-% N is the number of servers iin the cluster 
-% BATCH_SIZE is how many entries sent when request to append entries. We assume that BATCH_SIZE is 1 in out paper.  
-map	N, BATCH_SIZE, LIMIT_TERM, NUM_CILENT_REQUEST: Nat;
+% max no. of client requests
+map NumberOfClientRequests: Pos;
+eqn NumberOfClientRequests = 2;
 
-% Intialize the Global Variable
-eqn N = 2;
-	BATCH_SIZE = 1;
-	LIMIT_TERM = 3;    
-	NUM_CILENT_REQUEST = 3; 
+%max no. of terms
+map MaxTerm: Pos;
+eqn MaxTerm = 1;
 
-% log term function 
-% Input: one list of log of type Nat and position of that index in the log you want to find the log term. 
-% Return the term of the index in a log
-map logTerm: List(Nat) # Int -> Nat;
-var  l: List(Nat);
-     x: Int;
-eqn	(x < 1) -> logTerm(l, x) = 0;
-	(x > #l) -> logTerm(l, x) = 0;
-	(x >= 1 && x <= #l) -> logTerm(l,x) = l . abs(x-1);  %(In mcrl2 starts at 1 so we need to do abs(x-1)) 
+% no. of messages the server can hold
+map NetworkSize: Pos;
+eqn NetworkSize = 3;
 
-% Initalize list 
-% input: 
-% param 1: Size of the list 
-% param 2: Number v
-% return the list with of size element which is v. 
-map initList: Nat # Nat -> List(Nat);   
-	initListHelper: Nat # Nat # Nat -> List(Nat);   
-var size, v, c: Nat; 
-eqn initList(size, v) = initListHelper(size, v, 0);
-	(c >= size) -> initListHelper(size, v, c) = []; 
-	(c < size) -> initListHelper(size, v, c) = v |> initListHelper(size, v, c+1);
+map BATCH_SIZE: Pos;
+eqn BATCH_SIZE = 1; 
 
-%slice list 
+% no. that defines the majority within the cluster 
+% we don't model changes in cluster membership so this no. remains constant
+map MAJORITY: Pos;
+eqn MAJORITY = Int2Pos(ceil(NumberOfServers/2));
+
+%%%%% Data Types %%%%%
+
+% possible states of a node
+% We added Crashed state which is an extra state in addition to the state in the paper
+sort State = struct Leader | Candidate | Follower | Crashed;
+
+% structure for different kinds of messages
+sort RPC = struct RequestVoteRequest(currentTermRPC: Nat, endLogIndex: Nat, endLogTerm: Nat)?isRequestVoteRequest 
+                | RequestVoteResponse(currentTermRPC: Nat, isVoteGranted: Bool)?isRequestVoteResponse 
+                | AppendEntriesRequest(currentTermRPC: Nat, prevLogIndex: Nat, prevLogTerm: Nat, entries: LogType, leaderCommit: Nat)?isAppendEntriesRequest 
+                | AppendEntriesResponse(currentTermRPC: Nat, success: Bool, matchIndexRPC: Nat)?isAppendEntriesResponse;
+
+% structure for handling replies that need to be sent
+sort replyHelper = struct none?IsNone 
+                        | message(reply: NetworkPayload);
+
+% entry (command) inside the log
+sort logEntry = struct Command(term: Nat, commandID: Nat);
+
+% log maitained on each node (list of commands)
+sort LogType = List(logEntry);       
+
+% Network layer message
+sort NetworkPayload = struct Message(senderID: Nat, rpc: RPC, receiverID: Nat);
+
+%%%%%%% Functions (Equations) %%%%%%%
+  
+% get term of a particular index of the log
+% term of index 0 is 0 because log is 0
+map getTerm: LogType # Nat -> Nat;
+var log: LogType;
+    index: Nat;
+eqn getTerm(log, index) = term(log . Int2Nat(index - 1));
+
+% gets the term of the last command in the log
+map lastTerm: LogType -> Nat;
+var log: LogType;
+eqn lastTerm([]) = 0;
+    (log != []) -> lastTerm(log) = term(rhead(log));
+
+% slice a log 
 % Input: 
 % param 1: list 
 % param 2: x  
 % param 3: y 
-% return l[x:y] like python 
-map slice: List(Nat) # Int # Int -> List(Nat);  
-	growSlice: List(Nat) # List(Nat) # Int # Int # Int -> List(Nat); 
-var a, b: List(Nat);
-	x, y, n: Int; 	
-eqn slice(a, x, y) = growSlice([], a, x, y, 0);
-	n < x -> growSlice(b, a, x, y, n) = growSlice(b, a, x, y, n + 1);
-	n >= y -> growSlice(b, a, x, y, n) = b;
-	(n >= x && n < y) -> growSlice(b, a, x, y, n) = growSlice(b <| a.abs(n), a, x, y, n + 1);
+% assumption: x <= y
+% return l[x:y] return the sublist of index x (inclusive) to y (exclusive)  or if y > #log, l[x:..]
+map slice: LogType # Nat # Nat -> LogType;
+    sliceHelper: LogType # Nat # Nat # Nat -> LogType; 
+var log: LogType;
+    index, start, finish: Nat;
+    element: logEntry;
+eqn slice(log, start, finish) = sliceHelper(log, 0, start, finish);
+    (index < start) -> sliceHelper(element |> log,index,start,finish) = sliceHelper(log,index+1,start,finish);
+    (index >= start && index < finish) -> sliceHelper(element |> log,index,start,finish) = element |> sliceHelper(log,index+1,start,finish) ;
+    (index >= finish || log == []) -> sliceHelper(log,index,start,finish) = [];
 
-%Rep;ace an element from a list 
-% Input: List 
-% param 1: i element at position i that needed to be replaced. 
-% param 2: Replaced value
+% slice a list of naturals (inclusive of first and last) 
+% Input: 
+% param 1: list 
+% param 2: x  
+% param 3: y 
+% return l[x:y] reuturn the sublist of index x (inclusive) to y (exclusive)  
+map sliceNat: List(Nat) # Nat # Nat -> List(Nat);
+    sliceHelperNat: List(Nat) # Nat # Nat # Nat -> List(Nat); 
+var log: List(Nat);
+    start, finish, index: Nat;
+    element: Nat;
+eqn sliceNat(log, start, finish) = sliceHelperNat(log, 0, start, finish);
+    (index < start) -> sliceHelperNat(element |> log,index,start,finish) = sliceHelperNat(log,index+1,start,finish);
+    (index >= start && index < finish) -> sliceHelperNat(element |> log,index,start,finish) = element |> sliceHelperNat(log,index+1,start,finish) ;
+    (index >= finish || log == []) -> sliceHelperNat(log,index,start,finish) = [];
+
+% Replace an element from a list (improved by tim)
+% Input:
+% param 1: list: list of Natural number 
+% param 2: i element at position i that needed to be replaced. 
+% param 3: Replaced value
 % Output: List with element at position i replaced by x
 map replace: List(Nat) # Nat # Nat -> List(Nat);  
+var list: List(Nat);
+    index: Nat; 
+    item,item': Nat; 
+eqn 
+  replace([],index,item) = [];
+  replace(item'|>list, 0,item) = item |> list;
+  (index > 0) -> replace(item'|>list, index,item) = item' |> replace(list,Int2Nat(index-1),item);
 
-var a: List(Nat);
-	i: Nat; 
-	x: Nat; 
+% return the no. of servers that have a particular entry at the given index
+% Param 1: Index of the entry
+% Param 2: No. of servers that have the entry replicated (by default = 1 because the leader always has this entry in their log)
+% Param 3: loop counter that goes from 0 to max server id
+% Param 4: match index array which stores for each server, index of highest log entry replicated on the server
+map findNoOfServersAgree: Nat # List(Nat) -> Nat;
+var index: Nat;
+    elt: Nat;
+    array: List(Nat);
+eqn findNoOfServersAgree(index, []) = 1;
+    (index <= elt) -> findNoOfServersAgree(index, elt|>array)  = 1 + findNoOfServersAgree(index, array);
+    (index > elt) -> findNoOfServersAgree(index,  elt|>array)  = findNoOfServersAgree(index, array);  
 
-eqn (a . i != x) -> replace(a, i, x) = slice(a, 0, i) ++ [x] ++ slice(a, i+1, #a);
-	(a . i == x) -> replace(a, i, x) = a;
+% returns the highest index for which a log entry has been replicated on a majority of servers
+% Param 1: length of log
+% Param 2: match index array which stores for each server, index of highest log entry replicated on the server
+map findMaxAgreeIndex: Nat # List(Nat) -> Nat;
+var lenLog: Nat;
+    array: List(Nat);
+eqn (lenLog == 0) -> findMaxAgreeIndex(lenLog, array) = 0;
+    (lenLog > 0) -> findMaxAgreeIndex(lenLog, array) = if(findNoOfServersAgree(lenLog, array) < MAJORITY ,findMaxAgreeIndex(Int2Nat(lenLog - 1), array),lenLog);   
 
-% Implement insertion sort (increasing order)
-% Input: List 
-% Output: Sorted lis tin assending order 
-map sortAssendingOrder: List(Nat) -> List(Nat);
-	sortAssendingOrderHelper: List(Nat) # List(Nat) -> List(Nat);
-	insert: List(Nat) # Nat -> List(Nat); 
-	insertHelper: List(Nat) # List(Nat) # Nat -> List(Nat); 
+% Initalize list 
+% input: 
+% param 1: Number 
+% param 2: Number of Servers (size of the list)
+% return the list with of size element which is v. 
+map initArray: Nat # Nat -> List(Nat);
+var num, numServers: Nat;
+eqn initArray(num, 0) = [];
+    (numServers > 0) -> initArray(num, numServers) = num |> initArray(num, Int2Nat(numServers - 1));  
 
-var l, ls: List(Nat);
-	x: Nat;
+% returns a set of append entries messages
+% param 1: sender ID
+% param 2: nextIndex array
+% param 3: current term of the node
+% param 4: log
+% param 5: commit index of the leader
+map CreateAppendEntriesSet: Nat # List(Nat) # Nat # LogType # Nat -> FSet(NetworkPayload);
+var sender, termNode, commitIndex: Nat;
+    nextIndex: List(Nat);
+    log: LogType;
+eqn CreateAppendEntriesSet(sender, nextIndex, termNode, log, commitIndex) = CreateAppendEntriesSetHelper(sender, nextIndex, termNode, log, commitIndex, 0);
+    
+map CreateAppendEntriesSetHelper: Nat # List(Nat) # Nat # LogType # Nat # Nat -> FSet(NetworkPayload);
+var sender, termNode, commitIndex, receiver: Nat;
+    nextIndex: List(Nat);
+    log: LogType;
+eqn (receiver == NumberOfServers) -> CreateAppendEntriesSetHelper(sender, nextIndex, termNode, log, commitIndex, receiver) =  {};
+    (receiver < NumberOfServers)  -> CreateAppendEntriesSetHelper(sender, nextIndex, termNode, log, commitIndex, receiver) = 
+                                     CreateAppendEntriesSetHelper(sender, nextIndex, termNode, log, commitIndex, receiver + 1)
+                                     + if(receiver != sender, {CreateAppendEntriesMsg(sender, nextIndex.receiver, termNode, log, commitIndex, receiver)},{});
 
-eqn	sortAssendingOrder(l) = sortAssendingOrderHelper(l, []);
-	(#l == 0) -> sortAssendingOrderHelper(l, ls) = ls; 
-	(#l > 0) -> sortAssendingOrderHelper(l, ls) = sortAssendingOrderHelper(tail(l), insert(ls, head(l)));
-	insert(l,x) = insertHelper([], l, x);
-	(#l == 0) -> insertHelper(ls, l, x) = ls <| x; 
-	(#l > 0 && head(l) < x) -> insertHelper(ls, l, x) = insertHelper(ls <| head(l), tail(l), x);
-	(#l > 0 && head(l) >= x) -> insertHelper(ls, l, x) = (ls <| x) ++ l; 
-
-
-act
-  	sendClientRequest, wlog, receiveClientRequest: Nat;
-	stop, timeout, becomeLeader, AddVoteToItself, stepDown, test, resume, advanceCommitIndex, dropStaleResponse;  
-	% param1: type of vote request 
-	% param2: current term
-	% param3: last log term 
-	% param4: last log index
-	% param5: source or destination 
-	% param6: source or destination
-	requestVote, handleRequestVoteRequest, requestVoteSent: Nat # Nat # Nat # Nat # Nat;
-	sendRequestVoteReply, handleRequestVoteReply, replyVoteSent: Nat # Bool # Nat # Nat; 
-%(term, prevIndex, prevTerm, entries, commitIndex, from, to)
-	%param 1: current term of the source 
-	%param 2: prevIndex 
-	%param 3: prevTerm 
-	%param 4: entries 
-	%param 5: commitIndex 
-	%param 5: source or destination 
-	%param 6: source or destination  
-	sendAppendEntriesRequest,handleAppendEntriesRequest, appendEntriesRequestSent: Nat # Int # Nat # List(Nat) # Int # Nat # Nat; 
-	%param 1: current term of the desitnation 
-	%param 2: sucess or not (true is succes, otherwise not)
-	%param 3: matchIndex  
-	%param 4: current term
-	%param 5: prevIndex 
-	%param 6: prevTerm 
-	%param 7: entries 
-	%param 8: commitIndex 
-	%param 9: source or destination 
-	%param 10: source or destination
-	sendAppendEntriesReply, handleAppendEntriesReply, appendEntriesRequestReplied: Nat # Bool # Nat # Nat # Int # Nat # List(Nat) # Int # Nat # Nat; 
-
-
-proc
-	% Client process 
-	% First initalize with a integer n greater than 4. The client process will send n requests and the server will put n of those into their logs. 
-	Client(num: Nat) = (num >= 1) -> sendClientRequest(num) .  Client(num = abs(num-1));
-	
-	% Node process: 
-	% param: id of the node - id starts from 0.
-	% state: state of the node define by sorted State. There are three states of a node: leader, follower, candidate and crashed defined in struct State. 
-	% l: List is that contains the log of the node. (Temrn and index)
-	% voterlLog: List of Natural number 
-	% term: current term of the node  of Node  
-	% Votedfor if it does not vote for anyone, it is 0, otherwise the index of the voted node   
-	% nextIndex: map from server id to the next index of that server 
-	% matchIndex: map from server id to the match index of that server
-	% commitIndex: map from server id to the commited index of that server
- 	Node(id: Nat, state: State, l: List(Nat), voterLog: List(Nat), term: Nat, votedFor: Nat, nextIndex: List(Nat), matchIndex: List(Nat), commitIndex: Nat) = 
-	% Limit the number of term a server can have. 
-	(term < LIMIT_TERM) -> (
-		% If node is a leader, then the client can sendClientRequest message to that node and update the matchIndex of that node
-		((state == leader) -> (sum v:Nat . receiveClientRequest(v). Node(l = l ++ [term], matchIndex = replace(matchIndex, id, #l+1))))
-		
-		% A node can stop anytime. The node state change to crash. 
-		+ (state != crash) -> stop . Node(state = crash)
-
-		% If a node is crashed, then it can resume.  
-		+ (state == crash) -> resume . Node(state = follower)
-
-		% if it time out, then it changes to the candidate state and term + 1 (Timeout here means that we start the the new election)
-		+ (state == follower || state == candidate) 
-			-> timeout . Node(state = candidate, term = term+1, votedFor = id, voterLog = [id])
-		
-		% If it is a candiate then it sends the request vote request. 
-		+ (state == candidate) -> (    
-			% If other node d already vote for the current candidate, then we do not send the request vote anymore. 
-			% This is different from the TLA+. We chose to do this to minimize the number actions without losing the generalzation. Because if already received a vote from d, then sending d again will not change anything
-			% TODO: I am not sure this is actually true without losing the generalization. If there is still a leader and the leader append entries to that node d and the terms of d will be higher then the candidate in the mean tiem./ 
-			sum d: Nat . (!(d in voterLog)) -> requestVote(term, logTerm(l, #l), #l, id, d). Node()
-			+ 	
-			% If d is not in the voterlog, add d in the voter log. Also, if d is not in the voterlog, we will not add it to the log, because d is already voted -> no need to handle anymore 
-			sum d: Nat . (!(d in voterLog)) -> 
-				(    
-				% TODO check the voterlog part how they implement it. Need to discuss about this
-				handleRequestVoteReply(term, true, id, d). Node(voterLog = voterLog <| d) 
-				+ 
-				handleRequestVoteReply(term, false, id, d). Node()
-				)
-			+ 
-			% If it receives the majority of the vode then the node can become a leader 
-			((#voterLog*2 > N)) -> becomeLeader . Node(state = leader, nextIndex = initList(N, #l+1), matchIndex = initList(N, 0), nextIndex = initList(N, 1))) 
-
-	% Any nodes can handle the Vote Request. 
-	+ (state != candidate && state != crash) -> (
-		% For the reply, it does not change the state of the node? 
-		sum d, lastlogterm, requestTerm: Nat . sum lastlogindex: Nat . handleRequestVoteRequest(requestTerm, lastlogterm, lastlogindex,d,id) .    
-		%drop stale message
-		(term > requestTerm) -> dropStaleResponse . Node()
-		<>
-		% If term of the request is bigger than the current term, this means that the current node is not up-to-date, therefore it has to update its term by steping down  
-		(term < requestTerm) -> stepDown . Node(term = requestTerm, state = follower, votedFor = 0) 
-		% Otherwise this means that 
-		% 1. the term of the request is equal       
-		% 2. The term of the request is smaller  
-		% We only sendRequestVoteReply when the term of the request is equal.  
-		<> 
-		(term == requestTerm && 
-		(votedFor == 0 || votedFor == requestTerm)   
-			% We check the last log term and the last log intex 
-			&& (lastlogterm > logTerm(l, #l) || (lastlogterm == logTerm(l, #l) && lastlogindex >= #l))) 
-				-> sendRequestVoteReply(term, true,d ,id) . Node(votedFor = d) 
-				<> sendRequestVoteReply(term, false, d, id) . Node())  
-	
-	% A node can only send the append entries request to other node if it is a leader and nextIndex of its peer is smaller or equal to itself  
-	+ sum peer: Nat . (peer != id && peer < N && state == leader && nextIndex . peer <= #l) -> ( 
-		(matchIndex . peer + 1 < nextIndex . peer) 
-			-> 
-			sendAppendEntriesRequest(term, nextIndex . peer - 1, logTerm(l,  (nextIndex . peer) - 1), slice(l, nextIndex . peer - 1, nextIndex . peer - 1), min(commitIndex, nextIndex . peer - 1), id, peer)
-			<> 
-			sendAppendEntriesRequest(term, nextIndex . peer - 1, logTerm(l,  (nextIndex . peer) - 1), slice(l, nextIndex . peer - 1, min((nextIndex . peer) - 1 + BATCH_SIZE, #l)), min(commitIndex, (nextIndex . peer) - 1 + BATCH_SIZE), id, peer)
-			) . Node()
-
-	+ (state != crash) -> (sum requestTerm: Nat, requestPreIndex: Int, requestPreTerm: Nat, requestEntires: List(Nat), requestCommitIndex: Int, from: Nat. 
-		handleAppendEntriesRequest(requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, id)
-		. 
-		(term > requestTerm) -> dropStaleResponse . Node()
-		<>
-		(term < requestTerm) -> (stepDown . Node(term = requestTerm, state = follower, votedFor = 0)) 
-		<> 
-		((term == requestTerm && (requestPreIndex == 0 || requestPreIndex <= #l && logTerm(l, requestPreIndex) ==  requestPreTerm)) 	
-			-> sendAppendEntriesReply(term, true, abs(requestPreIndex) + #requestEntires, requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, id) . Node(l = slice(l, 0, abs(requestPreIndex)) ++ requestEntires, state = follower)
-			<> sendAppendEntriesReply(term, false, 0, requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, id)).Node())
-
-	+ (state != crash) -> (sum replyTerm: Nat, success: Bool, replyMatchIndex: Nat, requestTerm: Nat, requestPreIndex: Int, requestPreTerm: Nat, requestEntires: List(Nat), requestCommitIndex: Int, from: Nat, to: Nat . 
-		handleAppendEntriesReply(replyTerm, success, replyMatchIndex, requestTerm, requestPreIndex, requestPreTerm, requestEntires, requestCommitIndex, from, to) 
-		. (term < replyTerm) ->  stepDown . Node(term = replyTerm, state = follower, votedFor = 0) 
-							 <> ((state == leader && term == replyTerm)  -> ((success == true) -> test . Node(matchIndex = replace(matchIndex, to, max(matchIndex . to, replyMatchIndex)), nextIndex = replace(nextIndex, to, replyMatchIndex + 1))
-																							<>  test . Node(nextIndex = replace(nextIndex, to, max(1, nextIndex . to - 1)))))) 
-	
-	% WHen the sate is leader and the logterm is up to date , then the node can advanceCommitIndex. We find the commit index by sorting the array and taking the median of that. (We use floor to change from Real to Int and abs to change from Int to Nat.) 
-	+ (state == leader && logTerm(l, #l) == term) -> advanceCommitIndex . Node(commitIndex = sortAssendingOrder(matchIndex) . abs(floor(N/2)))
-
-	);      
+% creates a single append entries message
+map CreateAppendEntriesMsg: Nat # Nat # Nat # LogType # Nat # Nat -> NetworkPayload;
+var sender, termNode, commitIndex, receiver: Nat;
+    nextIndex_receiver: Nat;
+    log: LogType;
+eqn (nextIndex_receiver > 1) -> CreateAppendEntriesMsg(sender, nextIndex_receiver, termNode, log, commitIndex, receiver) = 
+                                              Message(sender, AppendEntriesRequest(termNode, Int2Nat((nextIndex_receiver) - 1), getTerm(log, Int2Nat((nextIndex_receiver) - 1)), slice(log, Int2Nat((nextIndex_receiver) - 1), min(LogLength, ((nextIndex_receiver)))), min(min(commitIndex, LogLength), nextIndex_receiver)), receiver) whr LogLength = #log end; 
+    (nextIndex_receiver <= 1) -> CreateAppendEntriesMsg(sender, nextIndex_receiver, termNode, log, commitIndex, receiver) = 
+                                              Message(sender, AppendEntriesRequest(termNode, Int2Nat((nextIndex_receiver) - 1), 0, slice(log, Int2Nat((nextIndex_receiver) - 1), min(LogLength, ((nextIndex_receiver)))), min(min(commitIndex, LogLength), nextIndex_receiver)), receiver) whr LogLength = #log end;
 
 
-init
-  allow(
-    { stop, timeout, becomeLeader, requestVoteSent, replyVoteSent, AddVoteToItself, stepDown, wlog, test, appendEntriesRequestSent, appendEntriesRequestReplied, resume, advanceCommitIndex, dropStaleResponse},
-    comm(
-      	{sendClientRequest|receiveClientRequest -> wlog,
-		requestVote|handleRequestVoteRequest -> requestVoteSent,
-		sendRequestVoteReply|handleRequestVoteReply -> replyVoteSent,
-		sendAppendEntriesRequest | handleAppendEntriesRequest -> appendEntriesRequestSent,
-		sendAppendEntriesReply | handleAppendEntriesReply -> appendEntriesRequestReplied}, 
-      Client(NUM_CILENT_REQUEST) || Node(0, follower, [], [], 1, 0, initList(N, 1), initList(N, 0), 0) || Node(1, follower, [], [], 1, 0, initList(N, 1), initList(N, 0), 0) 
-  ) ) ;
+% returns a set of request vote messages
+% param 1: sender ID
+% param 2: current term of node
+% param 3: length of the log
+% param 4: last term of the log
+% param 5: voter log of node
+map CreateRequestVoteSet: Nat # Nat # Nat # Nat # List(Nat) -> FSet(NetworkPayload);
+var sender, termNode, lengthLog, lastTermLog: Nat;
+    voterLog: List(Nat);
+eqn CreateRequestVoteSet(sender, termNode, lengthLog, lastTermLog, voterLog) = CreateRequestVoteSetHelper(sender, termNode, lengthLog, lastTermLog, voterLog, 0);
+
+map CreateRequestVoteSetHelper: Nat # Nat # Nat # Nat # List(Nat) # Nat -> FSet(NetworkPayload);
+var sender, termNode, lengthLog, lastTermLog, receiver: Nat;
+    voterLog: List(Nat);
+    msgSet: FSet(NetworkPayload);
+eqn (receiver == NumberOfServers) -> CreateRequestVoteSetHelper(sender, termNode, lengthLog, lastTermLog, voterLog, receiver) = {};
+    (receiver < NumberOfServers ) -> CreateRequestVoteSetHelper(sender, termNode, lengthLog, lastTermLog, voterLog, receiver) = 
+                                     CreateRequestVoteSetHelper(sender, termNode, lengthLog, lastTermLog, voterLog, receiver + 1 )
+                                     + if(receiver != sender && !(receiver in voterLog), {CreateRequestVoteMsg(sender, termNode, lengthLog, lastTermLog, receiver)},{});
+
+% creates a single request vote message
+map CreateRequestVoteMsg: Nat # Nat # Nat # Nat # Nat -> NetworkPayload;
+var sender, termNode, lengthLog, lastTermLog, receiver: Nat;
+eqn CreateRequestVoteMsg(sender, termNode, lengthLog, lastTermLog, receiver) = Message(sender, RequestVoteRequest(termNode, lengthLog, lastTermLog), receiver);
+
+
+%%%%%%%%%%%%% Conditions %%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+map hasVote,ConflictWithLeader,NoConflictWithLeader : NetworkPayload # LogType -> Bool;
+    LogOK : NetworkPayload # LogType -> Bool;
+    MsgfromCurrentTerm : NetworkPayload # LogType # Int -> Bool;
+    RequestSuccessful : NetworkPayload # LogType # List(Nat) # Nat # Nat -> Bool;
+    SliceLengthSmaller,SliceLengthEqual : LogType # NetworkPayload -> Bool;
+var msg: NetworkPayload;
+    log: LogType;
+    votedFor: Int;
+    commitIndex,currentTerm,index: Nat;
+    matchIndex: List(Nat);
+eqn
+    % Parameter 
+    % msg: Message from the network 
+    % log: Current log of the node
+    % Return wheather to vote for the node that sent the request   
+    hasVote(msg,log) = ((endLogTerm(rpc(msg)) > lastTerm(log)) 
+                                || ((endLogTerm(rpc(msg)) == lastTerm(log) ) && (endLogIndex(rpc(msg)) >= #log)));
+    LogOK(msg,log) = ((prevLogIndexMsg == 0) 
+                                || ((prevLogIndexMsg > 0) && (prevLogIndexMsg <= # log) && (prevLogTerm(rpc(msg)) == (getTerm(log, prevLogIndexMsg))))) whr prevLogIndexMsg = prevLogIndex(rpc(msg)) end;
+    MsgfromCurrentTerm(msg,log,votedFor) = ((endLogTerm(rpc(msg)) > lastTerm(log)) || ((endLogTerm(rpc(msg)) == lastTerm(log)) && (endLogIndex(rpc(msg)) >= #log))) 
+                                        && (votedFor == senderID(msg) || votedFor == -1);
+
+    RequestSuccessful(msg,log,matchIndex,commitIndex,currentTerm) = (((MaxAgreeIndex > 0) 
+                                                                    && (getTerm(log, MaxAgreeIndex) == currentTerm) 
+                                                                    && (commitIndex != MaxAgreeIndex))) whr MaxAgreeIndex = findMaxAgreeIndex(#log, matchIndex) end;
+
+   SliceLengthSmaller(log,msg) = #log < prevLogIndex(rpc(msg)); % min(#log, index) == index; 
+   SliceLengthEqual(log,msg) = #log == prevLogIndex(rpc(msg)); 
+   ConflictWithLeader(msg,log) = (# log > prevLogIndex(rpc(msg)) && (getTerm(log, (prevLogIndex(rpc(msg))+1)) != term(head( entries(rpc(msg)) ))));
+   NoConflictWithLeader(msg,log) = ((LogLength < prevLogIndex(rpc(msg))) || (LogLength > prevLogIndex(rpc(msg)) && (getTerm(log, (prevLogIndex(rpc(msg))+1)) == term(head( entries(rpc(msg)) ))))) whr LogLength = # log end;
+%%%%%%%%%%%%%% Actions %%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% actions for sending and receiving messages
+act sendToNetwork, receiveFromServer, sendToServer, receiveFromNetwork, sendRPC, receiveRPC: NetworkPayload;
+
+% actions for sending and receiving message sets
+act sendToNetworkSet, receiveFromServerSet, sendRPCset: FSet(NetworkPayload);
+
+% actions for sending and receiving client requests
+act sendClientRequest, recvClientRequest, clientCommand: Nat;
+
+% action for timing out
+act timeout;
+
+% action for advancing the commit index
+act advanceCommitIndex: Nat # Nat # Nat # LogType;
+
+% actions for property verification
+act exposeLeader: Nat # Nat;
+act exposeLog: Nat # Nat # Nat # LogType;
+act exposeLogLeader: Nat # LogType;
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%%%%%%%%%%%%%%%%%%%%%%% Processes %%%%%%%%%%%%%%%%%%%%%%%%
+proc Node_process_receiveFromNetwork(id:Nat, currentState: State, currentTerm: Nat, log: LogType, commitIndex: Nat,
+votedFor: Int, voterLog: List(Nat), nextIndex: List(Nat), matchIndex: List(Nat), replyToBeSent: replyHelper) = 
+
+sum msg: NetworkPayload . (receiverID(msg) == id) -> (
+            % drop stale message
+            (currentTermRPC(rpc(msg)) < currentTerm) -> 
+                receiveFromNetwork(msg) . Node()
+            +
+            % request vote request message with higher term
+            % If the last log term in the request message is greater than that of the current note or it it is equal, we need to compare the length of the log to decide what to send  
+            ((currentTermRPC(rpc(msg)) > currentTerm) && isRequestVoteRequest(rpc(msg)) && hasVote(msg,log)) -> 
+                  % voted for is set to nil so we vote automatically
+                  receiveFromNetwork(msg)
+                 .Node(currentState = Follower, currentTerm = currentTermRPC(rpc(msg)), votedFor = senderID(msg), replyToBeSent = message(Message(id, RequestVoteResponse(currentTermRPC(rpc(msg)), true) , senderID(msg))))
+            +
+            ((currentTermRPC(rpc(msg)) > currentTerm) && isRequestVoteRequest(rpc(msg)) && !hasVote(msg,log)) ->
+               receiveFromNetwork(msg)
+              .Node(currentState = Follower, currentTerm = currentTermRPC(rpc(msg)), votedFor = -1, replyToBeSent = message(Message(id, RequestVoteResponse(currentTermRPC(rpc(msg)), false) , senderID(msg))))
+            +
+            %msg has same term or is an append entries request with a greater term
+            (
+                    % If the last log term in the request message is greater than that of the current note or it it is equal, we need to compare the length of the log to decide what to send  
+                    (currentTermRPC(rpc(msg)) == currentTerm && isRequestVoteRequest(rpc(msg)) && MsgfromCurrentTerm(msg,log,votedFor)) -> (
+                        %vote for the sender if log is okay
+                        receiveFromNetwork(msg) 
+                       .Node(votedFor = senderID(msg), replyToBeSent = message(Message(id, RequestVoteResponse(currentTerm, true) , senderID(msg))))
+                    ) 
+                    +
+                    (currentTermRPC(rpc(msg)) == currentTerm && isRequestVoteRequest(rpc(msg)) && !MsgfromCurrentTerm(msg,log,votedFor)) -> 
+                        % don't vote if log is not okay or we've voted for someone else
+                        receiveFromNetwork(msg)
+                       .Node(replyToBeSent = message(Message(id, RequestVoteResponse(currentTerm, false) , senderID(msg))))
+                +
+                (currentTermRPC(rpc(msg)) == currentTerm && isRequestVoteResponse(rpc(msg))) -> (
+                    % vote was granted and we have obtained majority votes 
+                    (isVoteGranted(rpc(msg)) && # voterLog +1 >= MAJORITY) -> 
+                        % become the leader if majority is obtained
+                        receiveFromNetwork(msg) 
+                       .Node(voterLog = voterLog <| senderID(msg), currentState = Leader, nextIndex = initArray(# log + 1, NumberOfServers), matchIndex = initArray(0, NumberOfServers))
+                    +
+                    % vote was granted but we have not obtained majority votes
+                    (isVoteGranted(rpc(msg)) &&  #voterLog +1 < MAJORITY) -> 
+                        receiveFromNetwork(msg)
+                       .Node(voterLog = voterLog <| senderID(msg))
+                    +
+                    % vote was not granted
+                    (!isVoteGranted(rpc(msg))) -> 
+                        receiveFromNetwork(msg) 
+                       .Node()
+                )
+                + 
+                (currentTermRPC(rpc(msg)) >= currentTerm && isAppendEntriesRequest(rpc(msg))) -> 
+                (
+                    % heartbeat message
+                    ( LogOK(msg,log) && entries(rpc(msg)) == [] ) -> 
+                         receiveFromNetwork(msg)
+                        .Node(currentState = Follower, commitIndex = leaderCommit(rpc(msg)), replyToBeSent = message(Message(id, AppendEntriesResponse(currentTerm, true, prevLogIndex(rpc(msg))), senderID(msg))))
+                    +
+                     % normal append entry message
+                     % check for conflict with leader
+                     % hard coded to assume only one entry in the message
+                     % append entry in the log if it is missing
+                     % conflict and entries missing
+                     (LogOK(msg,log) &&  entries(rpc(msg)) != [] && ConflictWithLeader(msg,log) && SliceLengthSmaller(log,msg)) -> ( %(25/12)TW: slice is shorter, so slice is entire log
+                         receiveFromNetwork(msg)
+                        .Node(currentState = Follower, log = log ++ entries(rpc(msg)), commitIndex = leaderCommit(rpc(msg)), replyToBeSent = message(Message(id, AppendEntriesResponse(currentTerm, true, prevLogIndex(rpc(msg)) + 1), senderID(msg))))
+                     )
+                     +
+                     (LogOK(msg,log) && entries(rpc(msg)) != [] && ConflictWithLeader(msg,log) && !SliceLengthSmaller(log,msg)) ->  
+                     % conflict and no entries missing
+                         receiveFromNetwork(msg)
+                        .Node(currentState = Follower, log = slice(log, 0, prevLogIndex(rpc(msg))), commitIndex = leaderCommit(rpc(msg)), replyToBeSent = message(Message(id, AppendEntriesResponse(currentTerm, true, prevLogIndex(rpc(msg)) + 1), senderID(msg))))
+                     +
+                     % no conflict and entry missing
+                     (LogOK(msg,log) && entries(rpc(msg)) != [] && SliceLengthEqual(log,msg)) -> (
+                         receiveFromNetwork(msg)
+                        .Node(currentState = Follower, log = log ++ entries(rpc(msg)), commitIndex = leaderCommit(rpc(msg)), replyToBeSent = message(Message(id, AppendEntriesResponse(currentTerm, true, prevLogIndex(rpc(msg)) + 1), senderID(msg))))
+                     )
+                     +
+                     (LogOK(msg,log) && entries(rpc(msg)) != [] && NoConflictWithLeader(msg,log) ) -> 
+                     % no conflict and no entry missing
+                         receiveFromNetwork(msg)
+                        .Node(currentState = Follower, commitIndex = leaderCommit(rpc(msg)), replyToBeSent = message(Message(id, AppendEntriesResponse(currentTerm, true, prevLogIndex(rpc(msg)) + 1), senderID(msg))))
+
+                    +
+                    % log is not okay
+                    (!LogOK(msg,log)) -> 
+                         receiveFromNetwork(msg) 
+                        .Node(currentState = Follower, replyToBeSent = message(Message(id, AppendEntriesResponse(currentTerm, false, 0), senderID(msg))))
+                )
+                +
+                (currentTermRPC(rpc(msg)) == currentTerm && isAppendEntriesResponse(rpc(msg))) -> 
+                (
+                    % update nextIndex and matchIndex, advance commit index
+                    (success(rpc(msg)) && RequestSuccessful(msg,log,replace(matchIndex, senderID(msg), matchIndexRPC(rpc(msg))),commitIndex,currentTerm)) -> 
+                              receiveFromNetwork(msg) 
+                             .advanceCommitIndex(commitIndex, findMaxAgreeIndex(# log, matchIndex), currentTerm, log) 
+                             .Node(nextIndex = replace(nextIndex, senderID(msg), matchIndexRPC(rpc(msg))+1), matchIndex = replace(matchIndex, senderID(msg), matchIndexRPC(rpc(msg))), commitIndex = findMaxAgreeIndex(# log, replace(matchIndex, senderID(msg), matchIndexRPC(rpc(msg)))))
+                    +
+                    (success(rpc(msg)) && !RequestSuccessful(msg,log,replace(matchIndex, senderID(msg), matchIndexRPC(rpc(msg))),commitIndex,currentTerm)) -> 
+                    % update nextIndex and matchIndex
+                              receiveFromNetwork(msg) 
+                             .Node(nextIndex = replace(nextIndex, senderID(msg), matchIndexRPC(rpc(msg))+1), matchIndex = replace(matchIndex, senderID(msg), matchIndexRPC(rpc(msg))))
+                    +
+                    % update nextIndex, advance commit index
+                    (!success(rpc(msg)) && RequestSuccessful(msg,log,matchIndex,commitIndex,currentTerm)) -> 
+                               receiveFromNetwork(msg) 
+                              .advanceCommitIndex(commitIndex, findMaxAgreeIndex(# log, matchIndex), currentTerm, log) 
+                              .Node(nextIndex = replace(nextIndex, senderID(msg), max(1, (nextIndex . senderID(msg)) - 1)), commitIndex = findMaxAgreeIndex(# log, matchIndex)) 
+                    +
+                    % update nextIndex
+                    (!success(rpc(msg)) && !RequestSuccessful(msg,log,matchIndex,commitIndex,currentTerm)) -> 
+                               receiveFromNetwork(msg)
+                              .Node(nextIndex = replace(nextIndex, senderID(msg), max(1, (nextIndex . senderID(msg)) - 1)))
+                )
+            )
+        )
+;
+
+proc Node_process_sendToNetwork(id:Nat, currentState: State, currentTerm: Nat, log: LogType, commitIndex: Nat,
+votedFor: Int, voterLog: List(Nat), nextIndex: List(Nat), matchIndex: List(Nat), replyToBeSent: replyHelper) = 
+      % handle reply which needs to be sent
+        (!IsNone(replyToBeSent)) -> (
+            sendToNetwork(reply(replyToBeSent)) . Node (replyToBeSent = none)
+        )
+        +
+        % candidates can request votes
+        ((currentState == Candidate) && IsNone(replyToBeSent)) -> (
+            % send request vote RPCs (only to people not in voterlog)
+            sendToNetworkSet(CreateRequestVoteSet(id, currentTerm, # log, lastTerm(log), voterLog)) . Node()
+        )
+        +
+        % leaders can receive client commands, send append entry requests 
+        ((currentState == Leader) && IsNone(replyToBeSent)) -> (
+            % receive messages from clients
+            (sum clientCommandID: Nat . recvClientRequest(clientCommandID) . Node(log = log <| Command(currentTerm, clientCommandID)))
+            +
+            % send append entry requests or heartbeats to servers
+            sendToNetworkSet(CreateAppendEntriesSet(id, nextIndex, currentTerm, log, commitIndex)) . Node()
+        );
+
+
+% Node process
+proc Node(id: Nat, currentState: State, currentTerm: Nat, log: LogType, commitIndex: Nat, 
+votedFor: Int, voterLog: List(Nat), nextIndex: List(Nat), matchIndex: List(Nat), replyToBeSent: replyHelper) = 
+    (currentState != Crashed) -> (
+        (IsNone(replyToBeSent)) -> Node_process_receiveFromNetwork(id, currentState, currentTerm, log, commitIndex, votedFor, voterLog, nextIndex, matchIndex, replyToBeSent)
+        +
+        Node_process_sendToNetwork(id, currentState, currentTerm, log, commitIndex, votedFor, voterLog, nextIndex, matchIndex, replyToBeSent)
+        +
+        % Followers can transition into a candidate states by timing out
+        (currentState != Leader  && currentTerm < MaxTerm) -> (
+            timeout . Node(currentState = Candidate, currentTerm = currentTerm + 1, votedFor = Nat2Int(id), voterLog = [id], replyToBeSent = none)
+        )
+        % +
+        % % expose the leader (for property verification)
+        % (currentState == Leader) -> (
+        %     exposeLeader(id, currentTerm) . Node()
+        %     % +
+        %     %exposeLogLeader(currentTerm, log) . Node()
+        % )
+        +
+        % expose the log (for property verification)
+        exposeLog(id, currentTerm, commitIndex, log) . Node()        
+    
+    );
+
+% healthy and reliable network which doesn't loose messages
+proc HealthyNetwork(messageCollection: FSet(NetworkPayload)) = 
+            % receive messages from server
+            (# messageCollection < NetworkSize) -> sum msg: NetworkPayload . (receiveFromServer(msg) . HealthyNetwork(messageCollection = messageCollection + {msg}))
+            +
+            (# messageCollection + NumberOfServers < NetworkSize + 1) -> sum msgSet: FSet(NetworkPayload) . (receiveFromServerSet(msgSet) . HealthyNetwork(messageCollection = messageCollection + msgSet))
+            +
+            sum msg: NetworkPayload . (
+                (msg in messageCollection) -> (
+                    sendToServer(msg) . HealthyNetwork(messageCollection = messageCollection - {msg})
+                )
+            );
+
+% client process
+proc Client(clientCommandID: Pos) = 
+     ((clientCommandID <= NumberOfClientRequests) -> sendClientRequest(clientCommandID) . Client(clientCommandID+1));
+
+% initial configuration
+init allow( {sendRPC, receiveRPC, clientCommand, advanceCommitIndex, timeout, sendRPCset, exposeLeader, exposeLog, exposeLogLeader},
+               comm (
+                    {
+                         sendClientRequest | recvClientRequest -> clientCommand,
+                         sendToNetwork | receiveFromServer -> sendRPC, 
+                         sendToServer | receiveFromNetwork -> receiveRPC,
+                         sendToNetworkSet | receiveFromServerSet -> sendRPCset
+                    },
+                         Client(1) 
+                      || Node(id = 0, currentState = Follower, currentTerm = 0, log = [], commitIndex = 0,
+                              votedFor = -1, voterLog = [], nextIndex = initArray(0, NumberOfServers), matchIndex = initArray(0, NumberOfServers), replyToBeSent = none) 
+                      || Node(id = 1, currentState = Follower, currentTerm = 0, log = [], commitIndex = 0,
+                              votedFor = -1, voterLog = [], nextIndex = initArray(0, NumberOfServers), matchIndex = initArray(0, NumberOfServers), replyToBeSent = none) 
+                      || Node(id = 2, currentState = Follower, currentTerm = 0, log = [], commitIndex = 0,
+                              votedFor = -1, voterLog = [], nextIndex = initArray(0, NumberOfServers), matchIndex = initArray(0, NumberOfServers), replyToBeSent = none) 
+                      || HealthyNetwork(messageCollection = {})
+                    )
+
+);
