@@ -97,6 +97,23 @@ eqn sliceNat(log, start, finish) = sliceHelperNat(log, 0, start, finish);
     (index >= start && index < finish) -> sliceHelperNat(element |> log,index,start,finish) = element |> sliceHelperNat(log,index+1,start,finish) ;
     (index >= finish || log == []) -> sliceHelperNat(log,index,start,finish) = [];
 
+% slice a log of naturals (inclusive of first and last) 
+% Input: 
+% param 1: log 
+% param 2: x  
+% param 3: y 
+% return lof[x:y] reuturn the sublist of index x (inclusive) to y (inclusive) 
+map sliceLog: LogType # Nat # Nat -> LogType;
+    sliceHelperLog: LogType # Nat # Nat # Nat -> LogType; 
+var log: LogType;
+    index, start, finish: Nat;
+    element: logEntry;
+% Since we slice the log index start from 1, so we have to do start-1 
+eqn sliceLog(log, start, finish) = sliceHelperLog(log, 0, max(start-1, 0), finish);
+    (index < start) -> sliceHelperLog(element |> log,index,start,finish) = sliceHelperLog(log,index+1,start,finish);
+    (index >= start && index < finish) -> sliceHelperLog(element |> log,index,start,finish) = element |> sliceHelperLog(log,index+1,start,finish) ;
+    (index >= finish || log == []) -> sliceHelperLog(log,index,start,finish) = [];
+
 % Replace an element from a list (improved by tim)
 % Input:
 % param 1: list: list of Natural number 
@@ -172,9 +189,9 @@ var sender, termNode, commitIndex, receiver: Nat;
     nextIndex_receiver: Nat;
     log: LogType;
 eqn (nextIndex_receiver > 1) -> CreateAppendEntriesMsg(sender, nextIndex_receiver, termNode, log, commitIndex, receiver) = 
-                                              Message(sender, AppendEntriesRequest(termNode, getPreLogIndex(nextIndex_receiver), getTerm(log, getPreLogIndex(nextIndex_receiver)), slice(log, Int2Nat((nextIndex_receiver) - 1), min(LogLength, ((nextIndex_receiver)))), min(min(commitIndex, LogLength), nextIndex_receiver)), receiver) whr LogLength = #log end; 
+                                              Message(sender, AppendEntriesRequest(termNode, getPreLogIndex(nextIndex_receiver), getTerm(log, getPreLogIndex(nextIndex_receiver)), sliceLog(log, nextIndex_receiver, min(LogLength, nextIndex_receiver)), min(min(commitIndex, LogLength), nextIndex_receiver)), receiver) whr LogLength = #log end; 
     (nextIndex_receiver <= 1) -> CreateAppendEntriesMsg(sender, nextIndex_receiver, termNode, log, commitIndex, receiver) = 
-                                              Message(sender, AppendEntriesRequest(termNode, getPreLogIndex(nextIndex_receiver), 0, slice(log, Int2Nat((nextIndex_receiver) - 1), min(LogLength, ((nextIndex_receiver)))), min(min(commitIndex, LogLength), nextIndex_receiver)), receiver) whr LogLength = #log end;
+                                              Message(sender, AppendEntriesRequest(termNode, getPreLogIndex(nextIndex_receiver), 0, sliceLog(log, nextIndex_receiver, min(LogLength, nextIndex_receiver)), min(min(commitIndex, LogLength), nextIndex_receiver)), receiver) whr LogLength = #log end;
 
 
 % returns a set of request vote messages
