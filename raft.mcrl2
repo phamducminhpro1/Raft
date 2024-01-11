@@ -10,7 +10,7 @@ eqn NumberOfClientRequests = 2;
 
 %max no. of terms
 map MaxTerm: Pos;
-eqn MaxTerm = 2;
+eqn MaxTerm = 1;
 
 % no. of messages the server can hold
 map NetworkSize: Pos;
@@ -51,13 +51,12 @@ sort NetworkPayload = struct Message(senderID: Nat, rpc: RPC, receiverID: Nat);
 
 %%%%%%% Functions (Equations) %%%%%%%
   
-% get term of a particular index of the log
-% term of index 0 is 0 because log is 0
+% get term of a particular index of the log. 
+% We assume the log starts from 1 index 
 map getTerm: LogType # Nat -> Nat;
 var log: LogType;
     index: Nat;
-eqn getTerm([], index) = 0;
-    (log != []) -> getTerm(log, index) = term(log . Int2Nat(index - 1));
+eqn getTerm(log, index) = term(log . Int2Nat(index - 1));
 
 % gets the term of the last command in the log
 map lastTerm: LogType -> Nat;
@@ -65,7 +64,7 @@ var log: LogType;
 eqn lastTerm([]) = 0;
     (log != []) -> lastTerm(log) = term(rhead(log));
 
-% slice a log 
+% slice a list 
 % Input: 
 % param 1: list 
 % param 2: x  
@@ -171,10 +170,10 @@ map CreateAppendEntriesMsg: Nat # Nat # Nat # LogType # Nat # Nat -> NetworkPayl
 var sender, termNode, commitIndex, receiver: Nat;
     nextIndex_receiver: Nat;
     log: LogType;
-eqn (nextIndex_receiver > 0) -> CreateAppendEntriesMsg(sender, nextIndex_receiver, termNode, log, commitIndex, receiver) = 
-                                              Message(sender, AppendEntriesRequest(termNode, Int2Nat((nextIndex_receiver)), getTerm(log, Int2Nat((nextIndex_receiver))), slice(log, Int2Nat((nextIndex_receiver)), min(LogLength, ((max(nextIndex_receiver-1, 0))))), min(min(commitIndex, LogLength), max(nextIndex_receiver-1, 0))), receiver) whr LogLength = #log end; 
-    (nextIndex_receiver == 0) -> CreateAppendEntriesMsg(sender, nextIndex_receiver, termNode, log, commitIndex, receiver) = 
-                                              Message(sender, AppendEntriesRequest(termNode, Int2Nat((nextIndex_receiver)), 0, slice(log, Int2Nat((nextIndex_receiver)), min(LogLength, (max((nextIndex_receiver-1), 0)))), min(min(commitIndex, LogLength), nextIndex_receiver)), receiver) whr LogLength = #log end;
+eqn (nextIndex_receiver > 1) -> CreateAppendEntriesMsg(sender, nextIndex_receiver, termNode, log, commitIndex, receiver) = 
+                                              Message(sender, AppendEntriesRequest(termNode, Int2Nat((nextIndex_receiver) - 1), getTerm(log, Int2Nat((nextIndex_receiver) - 1)), slice(log, Int2Nat((nextIndex_receiver) - 1), min(LogLength, ((nextIndex_receiver)))), min(min(commitIndex, LogLength), nextIndex_receiver)), receiver) whr LogLength = #log end; 
+    (nextIndex_receiver <= 1) -> CreateAppendEntriesMsg(sender, nextIndex_receiver, termNode, log, commitIndex, receiver) = 
+                                              Message(sender, AppendEntriesRequest(termNode, Int2Nat((nextIndex_receiver) - 1), 0, slice(log, Int2Nat((nextIndex_receiver) - 1), min(LogLength, ((nextIndex_receiver)))), min(min(commitIndex, LogLength), nextIndex_receiver)), receiver) whr LogLength = #log end;
 
 
 % returns a set of request vote messages
@@ -202,10 +201,13 @@ map CreateRequestVoteMsg: Nat # Nat # Nat # Nat # Nat -> NetworkPayload;
 var sender, termNode, lengthLog, lastTermLog, receiver: Nat;
 eqn CreateRequestVoteMsg(sender, termNode, lengthLog, lastTermLog, receiver) = Message(sender, RequestVoteRequest(termNode, lengthLog, lastTermLog), receiver);
 
+% Get preLogIndex from nextIndex   
+map getPreLogIndex: Nat -> Nat; 
+var nextIndex: Nat;
+% We use max(), here because Nat can not be negative, and in our model, nextIndex is always greater or equal to 1, after the leader gets elected. 
+eqn getPreLogIndex(nextIndex) = max(nextIndex-1, 0);
 
 %%%%%%%%%%%%% Conditions %%%%%%%%%%%%%%%%%%%%%%%%%%
-
-
 map hasVoteTermGreater,ConflictWithLeader,NoConflictWithLeader : NetworkPayload # LogType -> Bool;
     LogOK : NetworkPayload # LogType -> Bool;
     hasVoteTermEqual : NetworkPayload # LogType # Int -> Bool;
@@ -315,7 +317,7 @@ sum msg: NetworkPayload . (receiverID(msg) == id) -> (
                     (isVoteGranted(rpc(msg)) && # voterLog +1 >= MAJORITY) -> 
                         % become the leader if majority is obtained
                         receiveFromNetwork(msg) 
-                       .Node(voterLog = voterLog <| senderID(msg), currentState = Leader, nextIndex = initArray(# log, NumberOfServers), matchIndex = initArray(0, NumberOfServers))
+                       .Node(voterLog = voterLog <| senderID(msg), currentState = Leader, nextIndex = initArray(# log + 1, NumberOfServers), matchIndex = initArray(0, NumberOfServers))
                     +
                     % vote was granted but we have not obtained majority votes
                     (isVoteGranted(rpc(msg)) &&  #voterLog +1 < MAJORITY) -> 
@@ -385,12 +387,12 @@ sum msg: NetworkPayload . (receiverID(msg) == id) -> (
                     (!success(rpc(msg)) && isAdvanceCommitIndexOk(msg,log,matchIndex,commitIndex,currentTerm)) -> 
                                receiveFromNetwork(msg) 
                               .advanceCommitIndex(commitIndex, findMaxAgreeIndex(# log, matchIndex), currentTerm, log) 
-                              .Node(nextIndex = replace(nextIndex, senderID(msg), max(0, (nextIndex . senderID(msg)) - 1)), commitIndex = findMaxAgreeIndex(# log, matchIndex)) 
+                              .Node(nextIndex = replace(nextIndex, senderID(msg), max(1, (nextIndex . senderID(msg)) - 1)), commitIndex = findMaxAgreeIndex(# log, matchIndex)) 
                     +
                     % update nextIndex
                     (!success(rpc(msg)) && !isAdvanceCommitIndexOk(msg,log,matchIndex,commitIndex,currentTerm)) -> 
                                receiveFromNetwork(msg)
-                              .Node(nextIndex = replace(nextIndex, senderID(msg), max(0, (nextIndex . senderID(msg)) - 1)))
+                              .Node(nextIndex = replace(nextIndex, senderID(msg), max(1, (nextIndex . senderID(msg)) - 1)))
                 )
             )
         )
@@ -463,11 +465,11 @@ init allow( {sendRPC, receiveRPC, clientCommand, advanceCommitIndex, timeout, se
                          sendToNetworkSet | receiveFromServerSet -> sendRPCset
                     },
                          Client(1) 
-                      || Node(id = 0, currentState = Follower, currentTerm = 1, log = [], commitIndex = 0,
+                      || Node(id = 0, currentState = Follower, currentTerm = 0, log = [], commitIndex = 0,
                               votedFor = -1, voterLog = [], nextIndex = initArray(0, NumberOfServers), matchIndex = initArray(0, NumberOfServers), replyToBeSent = none) 
-                      || Node(id = 1, currentState = Follower, currentTerm = 1, log = [], commitIndex = 0,
+                      || Node(id = 1, currentState = Follower, currentTerm = 0, log = [], commitIndex = 0,
                               votedFor = -1, voterLog = [], nextIndex = initArray(0, NumberOfServers), matchIndex = initArray(0, NumberOfServers), replyToBeSent = none) 
-                      || Node(id = 2, currentState = Follower, currentTerm = 1, log = [], commitIndex = 0,
+                      || Node(id = 2, currentState = Follower, currentTerm = 0, log = [], commitIndex = 0,
                               votedFor = -1, voterLog = [], nextIndex = initArray(0, NumberOfServers), matchIndex = initArray(0, NumberOfServers), replyToBeSent = none) 
                       || HealthyNetwork(messageCollection = {})
                     )
