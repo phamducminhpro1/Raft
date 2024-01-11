@@ -112,6 +112,7 @@ eqn
   replace(item'|>list, 0,item) = item |> list;
   (index > 0) -> replace(item'|>list, index,item) = item' |> replace(list,Int2Nat(index-1),item);
 
+
 % return the no. of servers that have a particular entry at the given index
 % Param 1: Index of the entry
 % Param 2: No. of servers that have the entry replicated (by default = 1 because the leader always has this entry in their log)
@@ -171,9 +172,9 @@ var sender, termNode, commitIndex, receiver: Nat;
     nextIndex_receiver: Nat;
     log: LogType;
 eqn (nextIndex_receiver > 1) -> CreateAppendEntriesMsg(sender, nextIndex_receiver, termNode, log, commitIndex, receiver) = 
-                                              Message(sender, AppendEntriesRequest(termNode, Int2Nat((nextIndex_receiver) - 1), getTerm(log, Int2Nat((nextIndex_receiver) - 1)), slice(log, Int2Nat((nextIndex_receiver) - 1), min(LogLength, ((nextIndex_receiver)))), min(min(commitIndex, LogLength), nextIndex_receiver)), receiver) whr LogLength = #log end; 
+                                              Message(sender, AppendEntriesRequest(termNode, getPreLogIndex(nextIndex_receiver), getTerm(log, getPreLogIndex(nextIndex_receiver)), slice(log, Int2Nat((nextIndex_receiver) - 1), min(LogLength, ((nextIndex_receiver)))), min(min(commitIndex, LogLength), nextIndex_receiver)), receiver) whr LogLength = #log end; 
     (nextIndex_receiver <= 1) -> CreateAppendEntriesMsg(sender, nextIndex_receiver, termNode, log, commitIndex, receiver) = 
-                                              Message(sender, AppendEntriesRequest(termNode, Int2Nat((nextIndex_receiver) - 1), 0, slice(log, Int2Nat((nextIndex_receiver) - 1), min(LogLength, ((nextIndex_receiver)))), min(min(commitIndex, LogLength), nextIndex_receiver)), receiver) whr LogLength = #log end;
+                                              Message(sender, AppendEntriesRequest(termNode, getPreLogIndex(nextIndex_receiver), 0, slice(log, Int2Nat((nextIndex_receiver) - 1), min(LogLength, ((nextIndex_receiver)))), min(min(commitIndex, LogLength), nextIndex_receiver)), receiver) whr LogLength = #log end;
 
 
 % returns a set of request vote messages
